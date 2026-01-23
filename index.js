@@ -11,7 +11,7 @@ app.use(express.json())
 let data = []
 
 // RECIBIR info (front input)
-app.post("/games", (req, res) => {
+app.post("/items", (req, res) => {
   const item = req.body
   data.push(item)
 
@@ -22,7 +22,7 @@ app.post("/games", (req, res) => {
 })
 
 // ENVIAR info (front output)
-app.get("/games", (req, res) => {
+app.get("/items", (req, res) => {
   res.json(data)
 })
 
