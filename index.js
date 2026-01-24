@@ -1,64 +1,73 @@
-const express = require("express")
-const cors = require("cors")
+const mongoose = require('mongoose');
 
-const app = express()
-const PORT = process.env.PORT || 3000
+// Tu URL verificada y lista para conectar
+const uri = "mongodb+srv://adminupgames2026:78simon87@cluster0.turx6r1.mongodb.net/UpGames?retryWrites=true&w=majority&appName=Cluster0";
 
-app.use(cors())
-app.use(express.json())
+mongoose.connect(uri)
+  .then(() => {
+    console.log("🚀 ¡CONEXIÓN EXITOSA! UpGames ya tiene base de datos eterna.");
+  })
+  .catch(err => {
+    console.error("❌ Error al conectar a MongoDB:", err);
+  });
 
-// "Base de datos" en memoria
-let items = []
 
-// 1. ENVIAR datos (GET)
-app.get("/items", (req, res) => {
-  res.json(items)
-})
+const API_URL = "https://backendapp-037y.onrender.com";
 
-// 2. RECIBIR UN SOLO ITEM (POST mejorado para usuarios)
-app.post("/items/add", (req, res) => {
-  const nuevoJuego = {
-    id: Date.now(), // Genera un ID único basado en el tiempo
-    status: "pendiente", // Todos entran para revisión
-    ...req.body // Trae title, description, link, image
-  }
-  
-  // Evitar duplicados por título
-  const existe = items.some(i => i.title.toLowerCase() === nuevoJuego.title.toLowerCase())
-  
-  if (existe) {
-    return res.status(400).json({ error: "El juego ya existe" })
-  }
+// Referencias a los inputs
+const addTitle = document.getElementById("addTitle");
+const addDescription = document.getElementById("addDescription");
+const addLink = document.getElementById("addLink");
+const addImage = document.getElementById("addImage");
+const btnPublicar = document.getElementById("publicarBtn"); // Asegúrate que el ID coincida en tu HTML
 
-  items.push(nuevoJuego) // Añade al final sin borrar lo anterior
-  res.json({ ok: true, message: "Esperando aprobación del admin" })
-})
+// FUNCIÓN PRINCIPAL PARA PUBLICAR
+async function publicarJuego() {
+    // 1. Recoger los valores
+    const nuevoJuego = {
+        title: addTitle.value.trim(),
+        description: addDescription.value.trim(),
+        link: addLink.value.trim(),
+        image: addImage.value.trim()
+    };
 
-// 3. APROBAR UN JUEGO (PUT) - Solo para tu Panel Admin
-app.put("/items/approve/:id", (req, res) => {
-  const { id } = req.params
-  const juego = items.find(i => i.id == id)
-  if (juego) {
-    juego.status = "aprobado"
-    res.json({ ok: true })
-  } else {
-    res.status(404).json({ error: "No encontrado" })
-  }
-})
+    // 2. Validación básica en el cliente
+    if (!nuevoJuego.title || !nuevoJuego.link) {
+        alert("Por favor, rellena al menos el Título y el Enlace de descarga.");
+        return;
+    }
 
-// 4. ELIMINAR UN JUEGO (DELETE) - Solo para tu Panel Admin
-app.delete("/items/:id", (req, res) => {
-  const { id } = req.params
-  items = items.filter(i => i.id != id)
-  res.json({ ok: true })
-})
+    try {
+        // 3. Enviar al servidor usando la nueva ruta /items/add
+        const response = await fetch(`${API_URL}/items/add`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(nuevoJuego)
+        });
 
-// MANTENER para compatibilidad (Opcional por si usas el viejo método)
-app.post("/items", (req, res) => {
-  items = req.body
-  res.json({ ok: true })
-})
+        const data = await response.json();
 
-app.listen(PORT, () => {
-  console.log("Backend profesional corriendo en puerto", PORT)
-})
+        if (response.ok) {
+            alert("🚀 ¡Juego enviado! Ahora está en revisión por el administrador.");
+            // Limpiar el formulario
+            addTitle.value = "";
+            addDescription.value = "";
+            addLink.value = "";
+            addImage.value = "";
+        } else {
+            // Aquí capturamos el error de "El juego ya existe" que configuramos en el backend
+            alert("Error: " + (data.error || "No se pudo publicar el juego."));
+        }
+
+    } catch (error) {
+        console.error("Error en la conexión:", error);
+        alert("Hubo un fallo al conectar con el servidor.");
+    }
+}
+
+// Escuchar el evento del botón
+if (btnPublicar) {
+    btnPublicar.addEventListener("click", publicarJuego);
+}
