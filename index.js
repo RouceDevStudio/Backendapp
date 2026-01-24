@@ -71,63 +71,64 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor en puerto ${PORT}`);
 });
 
-// ==========================================
-// CONFIGURACIÓN DE SEGURIDAD Y USUARIOS
-// ==========================================
+// ====================================================
+// BLOQUE DE USUARIOS Y LÓGICA FINAL (REEMPLAZAR AL FINAL)
+// ====================================================
 
-// 1. IMPORTANTE: Asegúrate de tener 'cors' al inicio, si no, este bloque lo refuerza
-const cors = require('cors');
-app.use(cors()); 
-
-// 2. Modelo de Usuario para el Repositorio
+// 1. Modelo de Usuario
 const usuarioSchema = new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     fecha: { type: Date, default: Date.now }
 });
 
-// Evitamos error de sobreescritura si ya existe el modelo
 const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", usuarioSchema);
 
-// 3. RUTA: Registro de nuevos perfiles
+// 2. RUTA: Registro de nuevos colaboradores
 app.post("/auth/register", async (req, res) => {
     try {
         const { usuario, password } = req.body;
-        
-        // Verificación de campos
-        if (!usuario || !password) {
-            return res.status(400).json({ mensaje: "Usuario y contraseña requeridos" });
-        }
+        if (!usuario || !password) return res.status(400).json({ mensaje: "Faltan datos" });
 
         const existe = await Usuario.findOne({ usuario });
-        if (existe) return res.status(400).json({ mensaje: "Este nombre de usuario ya está en uso" });
+        if (existe) return res.status(400).json({ mensaje: "El usuario ya existe" });
 
         const nuevoUsuario = new Usuario({ usuario, password });
         await nuevoUsuario.save();
-        res.status(201).json({ mensaje: "Perfil creado con éxito" });
+        res.status(201).json({ mensaje: "Perfil Cloud creado con éxito" });
     } catch (error) {
-        res.status(500).json({ mensaje: "Error en el registro", detalle: error.message });
+        res.status(500).json({ mensaje: "Error en registro", detalle: error.message });
     }
 });
 
-// 4. RUTA: Login y Sincronización
+// 3. RUTA: Login
 app.post("/auth/login", async (req, res) => {
     try {
         const { usuario, password } = req.body;
         const userEncontrado = await Usuario.findOne({ usuario, password });
 
         if (userEncontrado) {
-            res.json({ 
-                success: true, 
-                usuario: userEncontrado.usuario,
-                mensaje: "Sincronización exitosa" 
-            });
+            res.json({ success: true, usuario: userEncontrado.usuario });
         } else {
-            res.status(401).json({ success: false, mensaje: "Credenciales de acceso incorrectas" });
+            res.status(401).json({ success: false, mensaje: "Usuario o clave incorrectos" });
         }
     } catch (error) {
-        res.status(500).json({ mensaje: "Error de conexión con la base de datos" });
+        res.status(500).json({ mensaje: "Error de servidor" });
     }
 });
 
-// 5. NOTA: Asegúrate de que tu esquema de Juegos (Items) incluya: usuario: String
+// 4. RUTA PARA OBTENER SOLO MIS JUEGOS (Manejo de Perfil)
+app.get("/items/my/:user", async (req, res) => {
+    try {
+        const misJuegos = await Juego.find({ usuario: req.params.user });
+        res.json(misJuegos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 5. INICIO DEL SERVIDOR (SIEMPRE AL FINAL)
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor Cloud Repository en puerto ${PORT}`);
+});
