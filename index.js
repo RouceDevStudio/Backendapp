@@ -1,73 +1,66 @@
+const express = require('express');
 const mongoose = require('mongoose');
+const cors = require('cors');
+const app = express();
 
-// Tu URL verificada y lista para conectar
+app.use(cors());
+app.use(express.json());
+
+// 1. CONEXIÓN A MONGODB ATLAS
 const uri = "mongodb+srv://adminupgames2026:78simon87@cluster0.turx6r1.mongodb.net/UpGames?retryWrites=true&w=majority&appName=Cluster0";
 
 mongoose.connect(uri)
-  .then(() => {
-    console.log("🚀 ¡CONEXIÓN EXITOSA! UpGames ya tiene base de datos eterna.");
-  })
-  .catch(err => {
-    console.error("❌ Error al conectar a MongoDB:", err);
-  });
+  .then(() => console.log("🚀 ¡CONEXIÓN EXITOSA! UpGames ya tiene base de datos eterna."))
+  .catch(err => console.error("❌ Error al conectar a MongoDB:", err));
 
+// 2. MODELO DE DATOS (El "molde" para la base de datos)
+const JuegoSchema = new mongoose.Schema({
+    title: { type: String, required: true },
+    description: String,
+    link: { type: String, required: true },
+    image: String,
+    status: { type: String, default: "pendiente" } // Para tu sistema de aprobación
+});
 
-const API_URL = "https://backendapp-037y.onrender.com";
+const Juego = mongoose.model('Juego', JuegoSchema);
 
-// Referencias a los inputs
-const addTitle = document.getElementById("addTitle");
-const addDescription = document.getElementById("addDescription");
-const addLink = document.getElementById("addLink");
-const addImage = document.getElementById("addImage");
-const btnPublicar = document.getElementById("publicarBtn"); // Asegúrate que el ID coincida en tu HTML
-
-// FUNCIÓN PRINCIPAL PARA PUBLICAR
-async function publicarJuego() {
-    // 1. Recoger los valores
-    const nuevoJuego = {
-        title: addTitle.value.trim(),
-        description: addDescription.value.trim(),
-        link: addLink.value.trim(),
-        image: addImage.value.trim()
-    };
-
-    // 2. Validación básica en el cliente
-    if (!nuevoJuego.title || !nuevoJuego.link) {
-        alert("Por favor, rellena al menos el Título y el Enlace de descarga.");
-        return;
-    }
-
+// 3. RUTA PARA OBTENER JUEGOS (Para el buscador)
+app.get("/items", async (req, res) => {
     try {
-        // 3. Enviar al servidor usando la nueva ruta /items/add
-        const response = await fetch(`${API_URL}/items/add`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(nuevoJuego)
-        });
+        const juegos = await Juego.find();
+        res.json(juegos);
+    } catch (error) {
+        res.status(500).json({ error: "Error al obtener juegos" });
+    }
+});
 
-        const data = await response.json();
+// 4. RUTA PARA PUBLICAR JUEGOS (Desde el panel de colaborador)
+app.post("/items/add", async (req, res) => {
+    try {
+        const { title, description, link, image } = req.body;
 
-        if (response.ok) {
-            alert("🚀 ¡Juego enviado! Ahora está en revisión por el administrador.");
-            // Limpiar el formulario
-            addTitle.value = "";
-            addDescription.value = "";
-            addLink.value = "";
-            addImage.value = "";
-        } else {
-            // Aquí capturamos el error de "El juego ya existe" que configuramos en el backend
-            alert("Error: " + (data.error || "No se pudo publicar el juego."));
+        // Verificar si el juego ya existe por título
+        const existe = await Juego.findOne({ title: title });
+        if (existe) {
+            return res.status(400).json({ error: "Este juego ya ha sido publicado anteriormente." });
         }
 
-    } catch (error) {
-        console.error("Error en la conexión:", error);
-        alert("Hubo un fallo al conectar con el servidor.");
-    }
-}
+        const nuevoJuego = new Juego({
+            title,
+            description,
+            link,
+            image
+        });
 
-// Escuchar el evento del botón
-if (btnPublicar) {
-    btnPublicar.addEventListener("click", publicarJuego);
-}
+        await nuevoJuego.save();
+        res.status(201).json({ ok: true, message: "Juego guardado para siempre en la nube." });
+    } catch (error) {
+        res.status(500).json({ error: "Error al guardar en el servidor." });
+    }
+});
+
+// 5. INICIAR SERVIDOR
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`✅ Servidor UpGames corriendo en puerto ${PORT}`);
+});
