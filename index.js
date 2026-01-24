@@ -70,3 +70,64 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor en puerto ${PORT}`);
 });
+
+// ==========================================
+// CONFIGURACIÓN DE SEGURIDAD Y USUARIOS
+// ==========================================
+
+// 1. IMPORTANTE: Asegúrate de tener 'cors' al inicio, si no, este bloque lo refuerza
+const cors = require('cors');
+app.use(cors()); 
+
+// 2. Modelo de Usuario para el Repositorio
+const usuarioSchema = new mongoose.Schema({
+    usuario: { type: String, required: true, unique: true },
+    password: { type: String, required: true },
+    fecha: { type: Date, default: Date.now }
+});
+
+// Evitamos error de sobreescritura si ya existe el modelo
+const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", usuarioSchema);
+
+// 3. RUTA: Registro de nuevos perfiles
+app.post("/auth/register", async (req, res) => {
+    try {
+        const { usuario, password } = req.body;
+        
+        // Verificación de campos
+        if (!usuario || !password) {
+            return res.status(400).json({ mensaje: "Usuario y contraseña requeridos" });
+        }
+
+        const existe = await Usuario.findOne({ usuario });
+        if (existe) return res.status(400).json({ mensaje: "Este nombre de usuario ya está en uso" });
+
+        const nuevoUsuario = new Usuario({ usuario, password });
+        await nuevoUsuario.save();
+        res.status(201).json({ mensaje: "Perfil creado con éxito" });
+    } catch (error) {
+        res.status(500).json({ mensaje: "Error en el registro", detalle: error.message });
+    }
+});
+
+// 4. RUTA: Login y Sincronización
+app.post("/auth/login", async (req, res) => {
+    try {
+        const { usuario, password } = req.body;
+        const userEncontrado = await Usuario.findOne({ usuario, password });
+
+        if (userEncontrado) {
+            res.json({ 
+                success: true, 
+                usuario: userEncontrado.usuario,
+                mensaje: "Sincronización exitosa" 
+            });
+        } else {
+            res.status(401).json({ success: false, mensaje: "Credenciales de acceso incorrectas" });
+        }
+    } catch (error) {
+        res.status(500).json({ mensaje: "Error de conexión con la base de datos" });
+    }
+});
+
+// 5. NOTA: Asegúrate de que tu esquema de Juegos (Items) incluya: usuario: String
