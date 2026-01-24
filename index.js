@@ -4,28 +4,25 @@ const cors = require("cors")
 const app = express()
 const PORT = process.env.PORT || 3000
 
+// Middlewares
 app.use(cors())
 app.use(express.json())
 
-// "base de datos" temporal
-let data = []
+// "Base de datos" en memoria
+let items = []
 
-// RECIBIR info (front input)
+// RECIBIR datos desde el frontend (POST)
 app.post("/items", (req, res) => {
-  const item = req.body
-  data.push(item)
-
-  res.json({
-    ok: true,
-    message: "Dato recibido y guardado"
-  })
+  items = req.body
+  res.json({ ok: true })
 })
 
-// ENVIAR info (front output)
+// ENVIAR datos al frontend (GET)
 app.get("/items", (req, res) => {
-  res.json(data)
+  res.json(items)
 })
 
+// Arrancar servidor (NO CAMBIAR NADA AQUÍ)
 app.listen(PORT, () => {
   console.log("Backend corriendo en puerto", PORT)
 })
