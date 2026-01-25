@@ -15,10 +15,8 @@ mongoose.connect(uri)
   .catch(err => console.error("❌ ERROR DE MONGO:", err));
 
 // 2. MODELOS DE DATOS
-// Modelo de Juegos (Flexible)
 const Juego = mongoose.model('Juego', new mongoose.Schema({}, { strict: false, timestamps: true }));
 
-// Modelo de Usuario
 const usuarioSchema = new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
@@ -32,8 +30,23 @@ app.get("/", (req, res) => res.send("🚀 SERVIDOR UP-GAMES ONLINE"));
 // 4. RUTAS DE JUEGOS (Items)
 app.get("/items", async (req, res) => {
     try {
-        const juegos = await Juego.find();
+        // Traemos todos pero ordenados por los más nuevos
+        const juegos = await Juego.find().sort({ createdAt: -1 });
         res.json(juegos);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// NUEVA RUTA PARA EL PERFIL: Filtra solo lo aprobado de un usuario específico
+app.get("/items/user/:username", async (req, res) => {
+    try {
+        const nombre = req.params.username;
+        const juegosUsuario = await Juego.find({ 
+            usuario: nombre, 
+            status: "aprobado" 
+        }).sort({ createdAt: -1 });
+        res.json(juegosUsuario);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -52,7 +65,7 @@ app.post("/items/add", async (req, res) => {
     }
 });
 
-// 5. RUTAS DE ADMIN (Aprobar y Eliminar)
+// 5. RUTAS DE ADMIN
 app.put("/items/approve/:id", async (req, res) => {
     try {
         await Juego.findByIdAndUpdate(req.params.id, { status: "aprobado" });
@@ -67,15 +80,13 @@ app.delete("/items/:id", async (req, res) => {
     } catch (error) { res.status(500).send(error); }
 });
 
-// 6. RUTAS DE AUTENTICACIÓN (Login y Registro)
+// 6. RUTAS DE AUTENTICACIÓN
 app.post("/auth/register", async (req, res) => {
     try {
         const { usuario, password } = req.body;
         if (!usuario || !password) return res.status(400).json({ mensaje: "Faltan datos" });
-
         const existe = await Usuario.findOne({ usuario });
         if (existe) return res.status(400).json({ mensaje: "El usuario ya existe" });
-
         const nuevoUsuario = new Usuario({ usuario, password });
         await nuevoUsuario.save();
         res.status(201).json({ mensaje: "Perfil Cloud creado con éxito" });
@@ -88,7 +99,6 @@ app.post("/auth/login", async (req, res) => {
     try {
         const { usuario, password } = req.body;
         const userEncontrado = await Usuario.findOne({ usuario, password });
-
         if (userEncontrado) {
             res.json({ success: true, usuario: userEncontrado.usuario });
         } else {
@@ -99,17 +109,7 @@ app.post("/auth/login", async (req, res) => {
     }
 });
 
-// Ruta para obtener juegos por usuario específico
-app.get("/items/my/:user", async (req, res) => {
-    try {
-        const misJuegos = await Juego.find({ usuario: req.params.user });
-        res.json(misJuegos);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// 7. INICIO DEL SERVIDOR (ÚNICO Y AL FINAL)
+// 7. INICIO DEL SERVIDOR
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Servidor Cloud Repository en puerto ${PORT}`);
