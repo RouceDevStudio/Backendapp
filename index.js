@@ -30,7 +30,6 @@ app.get("/", (req, res) => res.send("🚀 SERVIDOR UP-GAMES ONLINE"));
 // 4. RUTAS DE JUEGOS (Items)
 app.get("/items", async (req, res) => {
     try {
-        // Traemos todos pero ordenados por los más nuevos
         const juegos = await Juego.find().sort({ createdAt: -1 });
         res.json(juegos);
     } catch (error) {
@@ -38,7 +37,6 @@ app.get("/items", async (req, res) => {
     }
 });
 
-// NUEVA RUTA PARA EL PERFIL: Filtra solo lo aprobado de un usuario específico
 app.get("/items/user/:username", async (req, res) => {
     try {
         const nombre = req.params.username;
@@ -65,7 +63,7 @@ app.post("/items/add", async (req, res) => {
     }
 });
 
-// 5. RUTAS DE ADMIN
+// 5. RUTAS DE ADMIN (Items)
 app.put("/items/approve/:id", async (req, res) => {
     try {
         await Juego.findByIdAndUpdate(req.params.id, { status: "aprobado" });
@@ -106,6 +104,27 @@ app.post("/auth/login", async (req, res) => {
         }
     } catch (error) {
         res.status(500).json({ mensaje: "Error de servidor" });
+    }
+});
+
+// --- 8. NUEVAS RUTAS PARA GESTIÓN DE USUARIOS (ADMIN) ---
+// Obtener lista de todos los usuarios registrados
+app.get("/auth/users", async (req, res) => {
+    try {
+        const usuarios = await Usuario.find({}, 'usuario fecha _id');
+        res.json(usuarios);
+    } catch (error) {
+        res.status(500).json({ mensaje: "Error al obtener usuarios" });
+    }
+});
+
+// Eliminar un usuario por su ID
+app.delete("/auth/users/:id", async (req, res) => {
+    try {
+        await Usuario.findByIdAndDelete(req.params.id);
+        res.json({ ok: true, mensaje: "Usuario eliminado" });
+    } catch (error) {
+        res.status(500).json({ mensaje: "Error al borrar usuario" });
     }
 });
 
