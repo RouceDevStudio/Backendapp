@@ -15,13 +15,16 @@ mongoose.connect(uri)
   .catch(err => console.error("❌ ERROR DE MONGO:", err));
 
 // 2. MODELOS DE DATOS
+// Juego se mantiene flexible con strict: false
 const Juego = mongoose.model('Juego', new mongoose.Schema({}, { strict: false, timestamps: true }));
 
+// Forzamos la colección a 'usuarios' (en minúsculas) para evitar errores de pluralización
 const usuarioSchema = new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     fecha: { type: Date, default: Date.now }
-});
+}, { collection: 'usuarios' }); 
+
 const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", usuarioSchema);
 
 // 3. RUTA DE PRUEBA
@@ -78,7 +81,7 @@ app.delete("/items/:id", async (req, res) => {
     } catch (error) { res.status(500).send(error); }
 });
 
-// 6. RUTAS DE AUTENTICACIÓN
+// 6. RUTAS DE AUTENTICACIÓN (Registro y Login)
 app.post("/auth/register", async (req, res) => {
     try {
         const { usuario, password } = req.body;
@@ -107,18 +110,16 @@ app.post("/auth/login", async (req, res) => {
     }
 });
 
-// --- 8. NUEVAS RUTAS PARA GESTIÓN DE USUARIOS (ADMIN) ---
-// Obtener lista de todos los usuarios registrados
+// 8. RUTAS DE GESTIÓN DE USUARIOS (Para el Panel de Admin)
 app.get("/auth/users", async (req, res) => {
     try {
-        const usuarios = await Usuario.find({}, 'usuario fecha _id');
+        const usuarios = await Usuario.find();
         res.json(usuarios);
     } catch (error) {
         res.status(500).json({ mensaje: "Error al obtener usuarios" });
     }
 });
 
-// Eliminar un usuario por su ID
 app.delete("/auth/users/:id", async (req, res) => {
     try {
         await Usuario.findByIdAndDelete(req.params.id);
