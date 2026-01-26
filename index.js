@@ -12,7 +12,7 @@ mongoose.connect(uri)
   .then(() => console.log("🚀 NÚCLEO CLOUD CONECTADO"))
   .catch(err => console.error("❌ ERROR DE CONEXIÓN:", err));
 
-// 2. MODELOS DE DATOS (ESTRICTOS)
+// 2. MODELOS DE DATOS
 const Juego = mongoose.model('Juego', new mongoose.Schema({
     usuario: String,
     title: String,
@@ -52,7 +52,6 @@ app.get("/items", async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// FUNCIÓN AGREGADA PARA EL PERFIL (SIN ELIMINAR NADA)
 app.get("/items/user/:usuario", async (req, res) => {
     try {
         const aportes = await Juego.find({ usuario: req.params.usuario }).sort({ createdAt: -1 });
@@ -144,13 +143,24 @@ app.delete("/favoritos/delete/:id", async (req, res) => {
     } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// 6. USUARIOS Y AUTH
+// 6. USUARIOS Y AUTH (Sincronizado)
 app.post("/auth/login", async (req, res) => {
     try {
         const { usuario, password } = req.body;
         const user = await Usuario.findOne({ usuario, password });
         if (user) res.json({ success: true, usuario: user.usuario });
-        else res.status(401).json({ success: false });
+        else res.status(401).json({ success: false, mensaje: "Credenciales incorrectas" });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.post("/auth/register", async (req, res) => {
+    try {
+        const { usuario, password } = req.body;
+        const existe = await Usuario.findOne({ usuario });
+        if (existe) return res.status(400).json({ success: false, mensaje: "Usuario ya existe" });
+        const nuevo = new Usuario({ usuario, password });
+        await nuevo.save();
+        res.json({ success: true, usuario: nuevo.usuario });
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
