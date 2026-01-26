@@ -12,41 +12,41 @@ mongoose.connect(uri)
   .then(() => console.log("🚀 NÚCLEO CLOUD CONECTADO"))
   .catch(err => console.error("❌ ERROR DE CONEXIÓN:", err));
 
-// 2. MODELOS DE DATOS
-const Juego = mongoose.model('Juego', new mongoose.Schema({
-    usuario: String,
-    title: String,
+// 2. MODELOS DE DATOS (Sincronizados para evitar "undefined")
+const Juego = mongoose.models.Juego || mongoose.model('Juego', new mongoose.Schema({
+    usuario: { type: String, default: "Cloud User" },
+    title: { type: String, required: true },
     description: String,
     image: String,
     link: String,
     status: { type: String, default: "pendiente" },
     reportes: { type: Number, default: 0 },
-    category: String,
+    category: { type: String, default: "General" },
     tags: [String]
 }, { timestamps: true }));
 
-// CORRECCIÓN: Se añade 'seguidores' al esquema de Usuario para que no devuelva 0
 const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     reputacion: { type: Number, default: 0 },
-    seguidores: { type: Number, default: 0 }, // <-- CAMBIO CLAVE
+    seguidores: { type: Number, default: 0 },
+    avatar: { type: String, default: "" },
     fecha: { type: Date, default: Date.now }
 }, { collection: 'usuarios' }));
 
-const Comentario = mongoose.model('Comentario', new mongoose.Schema({
+const Comentario = mongoose.models.Comentario || mongoose.model('Comentario', new mongoose.Schema({
     usuario: String,
     texto: String,
     itemId: String,
     fecha: { type: Date, default: Date.now }
 }));
 
-const Favorito = mongoose.model('Favorito', new mongoose.Schema({
+const Favorito = mongoose.models.Favorito || mongoose.model('Favorito', new mongoose.Schema({
     usuario: String,
     itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego' }
 }));
 
-// 3. RUTAS DE JUEGOS
+// 3. RUTAS DE JUEGOS (Aportes)
 app.get("/items", async (req, res) => {
     try {
         const juegos = await Juego.find().sort({ createdAt: -1 });
@@ -160,7 +160,7 @@ app.post("/auth/register", async (req, res) => {
         const { usuario, password } = req.body;
         const existe = await Usuario.findOne({ usuario });
         if (existe) return res.status(400).json({ success: false, mensaje: "Usuario ya existe" });
-        const nuevo = new Usuario({ usuario, password });
+        const nuevo = new Usuario({ usuario, password, seguidores: 0, reputacion: 0 });
         await nuevo.save();
         res.json({ success: true, usuario: nuevo.usuario });
     } catch (e) { res.status(500).json({ success: false }); }
@@ -180,27 +180,22 @@ app.delete("/auth/users/:id", async (req, res) => {
     } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// RUTA PARA SEGUIR (ACTUALIZADA)
+// RUTA PARA SEGUIR (FIXED)
 app.put("/auth/follow/:usuario", async (req, res) => {
     try {
         const { accion } = req.body; 
         const valor = accion === "incrementar" ? 1 : -1;
-        
         const user = await Usuario.findOneAndUpdate(
             { usuario: req.params.usuario },
             { $inc: { seguidores: valor } },
             { new: true }
         );
-        
-        if (!user) return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
-        
+        if (!user) return res.status(404).json({ success: false });
         res.json({ success: true, seguidores: user.seguidores });
-    } catch (e) { 
-        res.status(500).json({ success: false, error: e.message }); 
-    }
+    } catch (e) { res.status(500).json({ success: false }); }
 });
 
-// RUTA PARA ACTUALIZAR AVATAR
+// RUTA PARA AVATAR
 app.put("/auth/update-avatar", async (req, res) => {
     try {
         const { usuario, nuevaFoto } = req.body;
