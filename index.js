@@ -13,7 +13,6 @@ mongoose.connect(uri)
   .catch(err => console.error("❌ ERROR DE CONEXIÓN:", err));
 
 // 2. MODELOS DE DATOS
-// Juego con soporte para Reportes y Etiquetas de Desempeño
 const Juego = mongoose.model('Juego', new mongoose.Schema({
     usuario: String,
     title: String,
@@ -21,30 +20,28 @@ const Juego = mongoose.model('Juego', new mongoose.Schema({
     image: String,
     link: String,
     status: { type: String, default: "pendiente" },
-    reportes: { type: Number, default: 0 }, // Para el sistema de links caídos
-    tags: [String] // Para Gama Alta/Baja, etc.
+    reportes: { type: Number, default: 0 },
+    tags: [String]
 }, { timestamps: true }));
 
 const usuarioSchema = new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    reputacion: { type: Number, default: 0 }, // Para el sistema de Trusted Source
+    reputacion: { type: Number, default: 0 },
     fecha: { type: Date, default: Date.now }
 }, { collection: 'usuarios' });
 const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", usuarioSchema);
 
-// NUEVO: Modelo de Comentarios (Playlist de Feedback)
 const Comentario = mongoose.model('Comentario', new mongoose.Schema({
     usuario: String,
     texto: String,
-    itemId: String, // Si es comentario de un juego, o "general" para la app
+    itemId: String,
     fecha: { type: Date, default: Date.now }
 }));
 
-// NUEVO: Modelo de Favoritos (Bóveda Personal)
 const Favorito = mongoose.model('Favorito', new mongoose.Schema({
-    usuario: String, // Quién lo guarda
-    itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego' } // Qué guarda
+    usuario: String,
+    itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego' }
 }));
 
 // 3. RUTAS DE JUEGOS
@@ -55,7 +52,6 @@ app.get("/items", async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// NUEVO: Ruta para Deep Linking (Obtener un solo juego por ID)
 app.get("/items/single/:id", async (req, res) => {
     try {
         const juego = await Juego.findById(req.params.id);
@@ -71,7 +67,6 @@ app.post("/items/add", async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// NUEVO: Ruta para Reportar Link Caído
 app.put("/items/report/:id", async (req, res) => {
     try {
         const juego = await Juego.findByIdAndUpdate(req.params.id, { $inc: { reportes: 1 } }, { new: true });
@@ -79,10 +74,11 @@ app.put("/items/report/:id", async (req, res) => {
     } catch (error) { res.status(500).send(error); }
 });
 
-// 4. RUTAS DE COMENTARIOS (Playlist pública)
-app.get("/comentarios", async (req, res) => {
+// 4. RUTAS DE COMENTARIOS (ACTUALIZADA PARA FILTRAR)
+app.get("/comentarios/:id", async (req, res) => {
     try {
-        const comentarios = await Comentario.find().sort({ fecha: -1 });
+        // Ahora filtramos por itemId para que Dark Souls no muestre comentarios de Los Simpson
+        const comentarios = await Comentario.find({ itemId: req.params.id }).sort({ fecha: -1 });
         res.json(comentarios);
     } catch (error) { res.status(500).send(error); }
 });
@@ -118,6 +114,13 @@ app.get("/favoritos/:usuario", async (req, res) => {
     try {
         const lista = await Favorito.find({ usuario: req.params.usuario }).populate('itemId');
         res.json(lista);
+    } catch (error) { res.status(500).send(error); }
+});
+
+app.delete("/favoritos/delete/:id", async (req, res) => {
+    try {
+        await Favorito.findByIdAndDelete(req.params.id);
+        res.json({ ok: true, mensaje: "Eliminado de la bóveda" });
     } catch (error) { res.status(500).send(error); }
 });
 
