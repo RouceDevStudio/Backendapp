@@ -181,3 +181,17 @@ app.delete("/auth/users/:id", async (req, res) => {
 // 7. ARRANQUE
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ NÚCLEO ACTIVO EN PUERTO ${PORT}`));
+
+app.put("/auth/follow/:usuario", async (req, res) => {
+    try {
+        const { accion } = req.body; // "incrementar" o "decrementar"
+        const valor = accion === "incrementar" ? 1 : -1;
+        
+        const user = await Usuario.findOneAndUpdate(
+            { usuario: req.params.usuario },
+            { $inc: { seguidores: valor } },
+            { new: true }
+        );
+        res.json({ success: true, seguidores: user.seguidores });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
