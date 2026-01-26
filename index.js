@@ -25,10 +25,12 @@ const Juego = mongoose.model('Juego', new mongoose.Schema({
     tags: [String]
 }, { timestamps: true }));
 
+// CORRECCIÓN: Se añade 'seguidores' al esquema de Usuario para que no devuelva 0
 const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     reputacion: { type: Number, default: 0 },
+    seguidores: { type: Number, default: 0 }, // <-- CAMBIO CLAVE
     fecha: { type: Date, default: Date.now }
 }, { collection: 'usuarios' }));
 
@@ -143,7 +145,7 @@ app.delete("/favoritos/delete/:id", async (req, res) => {
     } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// 6. USUARIOS Y AUTH (Sincronizado)
+// 6. USUARIOS Y AUTH
 app.post("/auth/login", async (req, res) => {
     try {
         const { usuario, password } = req.body;
@@ -178,13 +180,10 @@ app.delete("/auth/users/:id", async (req, res) => {
     } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// 7. ARRANQUE
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`✅ NÚCLEO ACTIVO EN PUERTO ${PORT}`));
-
+// RUTA PARA SEGUIR (ACTUALIZADA)
 app.put("/auth/follow/:usuario", async (req, res) => {
     try {
-        const { accion } = req.body; // "incrementar" o "decrementar"
+        const { accion } = req.body; 
         const valor = accion === "incrementar" ? 1 : -1;
         
         const user = await Usuario.findOneAndUpdate(
@@ -192,6 +191,24 @@ app.put("/auth/follow/:usuario", async (req, res) => {
             { $inc: { seguidores: valor } },
             { new: true }
         );
+        
+        if (!user) return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
+        
         res.json({ success: true, seguidores: user.seguidores });
+    } catch (e) { 
+        res.status(500).json({ success: false, error: e.message }); 
+    }
+});
+
+// RUTA PARA ACTUALIZAR AVATAR
+app.put("/auth/update-avatar", async (req, res) => {
+    try {
+        const { usuario, nuevaFoto } = req.body;
+        await Usuario.findOneAndUpdate({ usuario }, { avatar: nuevaFoto });
+        res.json({ success: true });
     } catch (e) { res.status(500).json({ success: false }); }
 });
+
+// 7. ARRANQUE
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, '0.0.0.0', () => console.log(`✅ NÚCLEO ACTIVO EN PUERTO ${PORT}`));
