@@ -12,7 +12,7 @@ mongoose.connect(uri)
   .then(() => console.log("🚀 NÚCLEO CLOUD CONECTADO"))
   .catch(err => console.error("❌ ERROR DE CONEXIÓN:", err));
 
-// 2. MODELOS DE DATOS
+// 2. MODELOS DE DATOS (ESTRICTOS)
 const Juego = mongoose.model('Juego', new mongoose.Schema({
     usuario: String,
     title: String,
@@ -44,12 +44,20 @@ const Favorito = mongoose.model('Favorito', new mongoose.Schema({
     itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego' }
 }));
 
-// 3. RUTAS DE JUEGOS (PÚBLICO Y ADMIN)
+// 3. RUTAS DE JUEGOS
 app.get("/items", async (req, res) => {
     try {
         const juegos = await Juego.find().sort({ createdAt: -1 });
         res.json(juegos);
     } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// FUNCIÓN AGREGADA PARA EL PERFIL (SIN ELIMINAR NADA)
+app.get("/items/user/:usuario", async (req, res) => {
+    try {
+        const aportes = await Juego.find({ usuario: req.params.usuario }).sort({ createdAt: -1 });
+        res.json(aportes);
+    } catch (error) { res.status(500).json([]); }
 });
 
 app.post("/items/add", async (req, res) => {
@@ -60,42 +68,40 @@ app.post("/items/add", async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// APROBAR JUEGO (ADMIN)
 app.put("/items/approve/:id", async (req, res) => {
     try {
         await Juego.findByIdAndUpdate(req.params.id, { status: "aprobado" });
         res.json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// ELIMINAR JUEGO (ADMIN)
 app.delete("/items/:id", async (req, res) => {
     try {
         await Juego.findByIdAndDelete(req.params.id);
         res.json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 app.put("/items/report/:id", async (req, res) => {
     try {
         const juego = await Juego.findByIdAndUpdate(req.params.id, { $inc: { reportes: 1 } }, { new: true });
         res.json({ ok: true, reportes: juego.reportes });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 // 4. RUTAS DE COMENTARIOS
-app.get("/comentarios", async (req, res) => { // Todos los comentarios (Para Admin)
+app.get("/comentarios", async (req, res) => {
     try {
         const comentarios = await Comentario.find().sort({ fecha: -1 });
         res.json(comentarios);
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json([]); }
 });
 
-app.get("/comentarios/:id", async (req, res) => { // Filtrados por Juego (Para App)
+app.get("/comentarios/:id", async (req, res) => {
     try {
         const comentarios = await Comentario.find({ itemId: req.params.id }).sort({ fecha: -1 });
         res.json(comentarios);
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json([]); }
 });
 
 app.post("/comentarios", async (req, res) => {
@@ -103,14 +109,14 @@ app.post("/comentarios", async (req, res) => {
         const nuevo = new Comentario(req.body);
         await nuevo.save();
         res.status(201).json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 app.delete("/comentarios/:id", async (req, res) => {
     try {
         await Comentario.findByIdAndDelete(req.params.id);
         res.json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 // 5. RUTAS DE FAVORITOS
@@ -121,41 +127,45 @@ app.post("/favoritos/add", async (req, res) => {
         if (existe) return res.status(400).json({ mensaje: "Ya existe" });
         await new Favorito({ usuario, itemId }).save();
         res.json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 app.get("/favoritos/:usuario", async (req, res) => {
     try {
         const lista = await Favorito.find({ usuario: req.params.usuario }).populate('itemId');
         res.json(lista);
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json([]); }
 });
 
 app.delete("/favoritos/delete/:id", async (req, res) => {
     try {
         await Favorito.findByIdAndDelete(req.params.id);
         res.json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 // 6. USUARIOS Y AUTH
 app.post("/auth/login", async (req, res) => {
-    const { usuario, password } = req.body;
-    const user = await Usuario.findOne({ usuario, password });
-    if (user) res.json({ success: true, usuario: user.usuario });
-    else res.status(401).json({ success: false });
+    try {
+        const { usuario, password } = req.body;
+        const user = await Usuario.findOne({ usuario, password });
+        if (user) res.json({ success: true, usuario: user.usuario });
+        else res.status(401).json({ success: false });
+    } catch (e) { res.status(500).json({ success: false }); }
 });
 
 app.get("/auth/users", async (req, res) => {
-    const usuarios = await Usuario.find();
-    res.json(usuarios);
+    try {
+        const usuarios = await Usuario.find();
+        res.json(usuarios);
+    } catch (error) { res.status(500).json([]); }
 });
 
 app.delete("/auth/users/:id", async (req, res) => {
     try {
         await Usuario.findByIdAndDelete(req.params.id);
         res.json({ ok: true });
-    } catch (error) { res.status(500).send(error); }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 // 7. ARRANQUE
