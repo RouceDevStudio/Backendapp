@@ -21,16 +21,16 @@ const Juego = mongoose.model('Juego', new mongoose.Schema({
     link: String,
     status: { type: String, default: "pendiente" },
     reportes: { type: Number, default: 0 },
+    category: String,
     tags: [String]
 }, { timestamps: true }));
 
-const usuarioSchema = new mongoose.Schema({
+const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", new mongoose.Schema({
     usuario: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     reputacion: { type: Number, default: 0 },
     fecha: { type: Date, default: Date.now }
-}, { collection: 'usuarios' });
-const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", usuarioSchema);
+}, { collection: 'usuarios' }));
 
 const Comentario = mongoose.model('Comentario', new mongoose.Schema({
     usuario: String,
@@ -44,19 +44,12 @@ const Favorito = mongoose.model('Favorito', new mongoose.Schema({
     itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego' }
 }));
 
-// 3. RUTAS DE JUEGOS
+// 3. RUTAS DE JUEGOS (PÚBLICO Y ADMIN)
 app.get("/items", async (req, res) => {
     try {
         const juegos = await Juego.find().sort({ createdAt: -1 });
         res.json(juegos);
     } catch (error) { res.status(500).json({ error: error.message }); }
-});
-
-app.get("/items/single/:id", async (req, res) => {
-    try {
-        const juego = await Juego.findById(req.params.id);
-        res.json(juego);
-    } catch (error) { res.status(404).json({ error: "Juego no encontrado" }); }
 });
 
 app.post("/items/add", async (req, res) => {
@@ -67,6 +60,22 @@ app.post("/items/add", async (req, res) => {
     } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// APROBAR JUEGO (ADMIN)
+app.put("/items/approve/:id", async (req, res) => {
+    try {
+        await Juego.findByIdAndUpdate(req.params.id, { status: "aprobado" });
+        res.json({ ok: true });
+    } catch (error) { res.status(500).send(error); }
+});
+
+// ELIMINAR JUEGO (ADMIN)
+app.delete("/items/:id", async (req, res) => {
+    try {
+        await Juego.findByIdAndDelete(req.params.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(500).send(error); }
+});
+
 app.put("/items/report/:id", async (req, res) => {
     try {
         const juego = await Juego.findByIdAndUpdate(req.params.id, { $inc: { reportes: 1 } }, { new: true });
@@ -74,10 +83,16 @@ app.put("/items/report/:id", async (req, res) => {
     } catch (error) { res.status(500).send(error); }
 });
 
-// 4. RUTAS DE COMENTARIOS (ACTUALIZADA PARA FILTRAR)
-app.get("/comentarios/:id", async (req, res) => {
+// 4. RUTAS DE COMENTARIOS
+app.get("/comentarios", async (req, res) => { // Todos los comentarios (Para Admin)
     try {
-        // Ahora filtramos por itemId para que Dark Souls no muestre comentarios de Los Simpson
+        const comentarios = await Comentario.find().sort({ fecha: -1 });
+        res.json(comentarios);
+    } catch (error) { res.status(500).send(error); }
+});
+
+app.get("/comentarios/:id", async (req, res) => { // Filtrados por Juego (Para App)
+    try {
         const comentarios = await Comentario.find({ itemId: req.params.id }).sort({ fecha: -1 });
         res.json(comentarios);
     } catch (error) { res.status(500).send(error); }
@@ -98,14 +113,13 @@ app.delete("/comentarios/:id", async (req, res) => {
     } catch (error) { res.status(500).send(error); }
 });
 
-// 5. RUTAS DE FAVORITOS (Bóveda)
+// 5. RUTAS DE FAVORITOS
 app.post("/favoritos/add", async (req, res) => {
     try {
         const { usuario, itemId } = req.body;
         const existe = await Favorito.findOne({ usuario, itemId });
-        if (existe) return res.status(400).json({ mensaje: "Ya está en tu bóveda" });
-        const nuevoFav = new Favorito({ usuario, itemId });
-        await nuevoFav.save();
+        if (existe) return res.status(400).json({ mensaje: "Ya existe" });
+        await new Favorito({ usuario, itemId }).save();
         res.json({ ok: true });
     } catch (error) { res.status(500).send(error); }
 });
@@ -120,29 +134,16 @@ app.get("/favoritos/:usuario", async (req, res) => {
 app.delete("/favoritos/delete/:id", async (req, res) => {
     try {
         await Favorito.findByIdAndDelete(req.params.id);
-        res.json({ ok: true, mensaje: "Eliminado de la bóveda" });
+        res.json({ ok: true });
     } catch (error) { res.status(500).send(error); }
 });
 
-// 6. AUTENTICACIÓN Y GESTIÓN DE USUARIOS
-app.post("/auth/register", async (req, res) => {
-    try {
-        const { usuario, password } = req.body;
-        const existe = await Usuario.findOne({ usuario });
-        if (existe) return res.status(400).json({ mensaje: "El usuario ya existe" });
-        const nuevoUsuario = new Usuario({ usuario, password });
-        await nuevoUsuario.save();
-        res.status(201).json({ mensaje: "Perfil Cloud creado" });
-    } catch (error) { res.status(500).json({ error: error.message }); }
-});
-
+// 6. USUARIOS Y AUTH
 app.post("/auth/login", async (req, res) => {
-    try {
-        const { usuario, password } = req.body;
-        const userEncontrado = await Usuario.findOne({ usuario, password });
-        if (userEncontrado) res.json({ success: true, usuario: userEncontrado.usuario });
-        else res.status(401).json({ success: false });
-    } catch (error) { res.status(500).send(error); }
+    const { usuario, password } = req.body;
+    const user = await Usuario.findOne({ usuario, password });
+    if (user) res.json({ success: true, usuario: user.usuario });
+    else res.status(401).json({ success: false });
 });
 
 app.get("/auth/users", async (req, res) => {
@@ -150,6 +151,13 @@ app.get("/auth/users", async (req, res) => {
     res.json(usuarios);
 });
 
+app.delete("/auth/users/:id", async (req, res) => {
+    try {
+        await Usuario.findByIdAndDelete(req.params.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(500).send(error); }
+});
+
 // 7. ARRANQUE
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, '0.0.0.0', () => console.log(`✅ Servidor Up-Games en puerto ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`✅ NÚCLEO ACTIVO EN PUERTO ${PORT}`));
