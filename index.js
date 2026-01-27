@@ -31,7 +31,7 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model("User", UserSchema);
 
 const ItemSchema = new mongoose.Schema({
-    username: { type: String, index: true }, // The uploader
+    username: { type: String, index: true }, 
     title: { type: String, required: true },
     description: String,
     image: String,
@@ -63,14 +63,17 @@ const Comment = mongoose.model('Comment', CommentSchema);
 
 // [1. AUTHENTICATION & PROFILE]
 app.post("/auth/login", async (req, res) => {
-    const { username, password } = req.body;
+    // AJUSTE: Acepta tanto 'username' como 'usuario' para compatibilidad total
+    const username = req.body.username || req.body.usuario;
+    const { password } = req.body;
     const user = await User.findOne({ username, password });
     if (user) res.json({ success: true, ...user._doc });
     else res.status(401).json({ success: false, message: "Invalid credentials" });
 });
 
 app.post("/auth/register", async (req, res) => {
-    const { username, password } = req.body;
+    const username = req.body.username || req.body.usuario;
+    const { password } = req.body;
     const exists = await User.findOne({ username });
     if (exists) return res.status(400).json({ success: false, message: "User already exists" });
     const newUser = new User({ username, password });
@@ -118,7 +121,14 @@ app.get("/items/user/:username", async (req, res) => {
 });
 
 app.post("/items/add", async (req, res) => {
-    const newItem = new Item({ ...req.body, status: "pending" });
+    // AJUSTE: Normalización de datos recibidos
+    const data = {
+        ...req.body,
+        username: req.body.username || req.body.usuario,
+        category: req.body.category || req.body.categoria,
+        status: "pending"
+    };
+    const newItem = new Item(data);
     await newItem.save();
     res.json({ ok: true });
 });
@@ -130,7 +140,6 @@ app.put("/items/approve/:id", async (req, res) => {
 
 app.put("/items/report/:id", async (req, res) => {
     const item = await Item.findByIdAndUpdate(req.params.id, { $inc: { reports: 1 } }, { new: true });
-    // Auto-hide if reports reach threshold
     if (item.reports >= 10) await Item.findByIdAndUpdate(req.params.id, { status: "pending" });
     res.json({ ok: true, reports: item.reports });
 });
@@ -160,13 +169,31 @@ app.delete("/favorites/delete/:id", async (req, res) => {
 });
 
 // [5. COMMENTS]
+
+// NUEVA RUTA: Obtener TODOS los comentarios para el Panel Admin
+app.get("/comments/all", async (req, res) => {
+    const c = await Comment.find().sort({ date: -1 });
+    res.json(c);
+});
+
 app.get("/comments/:id", async (req, res) => {
     const c = await Comment.find({ itemId: req.params.id }).sort({ date: -1 });
     res.json(c);
 });
 
 app.post("/comments", async (req, res) => {
-    await new Comment(req.body).save();
+    const data = {
+        ...req.body,
+        username: req.body.username || req.body.usuario,
+        text: req.body.text || req.body.texto
+    };
+    await new Comment(data).save();
+    res.json({ ok: true });
+});
+
+// NUEVA RUTA: Borrar comentario desde Admin
+app.delete("/comments/:id", async (req, res) => {
+    await Comment.findByIdAndDelete(req.params.id);
     res.json({ ok: true });
 });
 
