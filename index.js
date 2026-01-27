@@ -238,6 +238,61 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: "Critical System Error" });
 });
 
+// 1. INYECCIÓN DE CAMPOS (No afecta los datos actuales, solo permite los nuevos)
+Usuario.schema.add({
+    isVerified: { type: Boolean, default: false },
+    rango: { type: String, default: "usuario" }
+});
+
+// 2. RUTA DE CONTROL (Se conecta con tu nuevo Panel de Admin)
+app.put("/auth/admin/update-rank", async (req, res) => {
+    try {
+        const { id, isVerified, rango } = req.body;
+        const user = await Usuario.findByIdAndUpdate(
+            id,
+            { $set: { isVerified, rango } },
+            { new: true, lean: true }
+        ).select('-password');
+
+        if (!user) return res.status(404).json({ success: false });
+        
+        console.log(`[CORE-ADMIN] Cambio de estatus: @${user.usuario} -> ${rango} (Verificado: ${isVerified})`);
+        res.json({ success: true, user });
+    } catch (e) {
+        res.status(500).json({ success: false });
+    }
+});
+
+// --- PLUGIN DE PERSONALIZACIÓN GLOBAL (UPGAMES 2026) ---
+
+// 1. Endpoint para Guardar Preferencias (Se conecta con tu MongoDB)
+app.post('/api/user/update-style', async (req, res) => {
+    const { email, themeColor, layoutMode, glassEffect } = req.body;
+    
+    try {
+        // Buscamos al usuario por su email (ej: mr.m0onster@protonmail.com)
+        const user = await User.findOne({ email });
+        if (!user) return res.status(404).json({ message: "Usuario no encontrado" });
+
+        // Guardamos las preferencias en un objeto dentro del usuario
+        user.appStyle = {
+            themeColor: themeColor || '#5EFF43',
+            layoutMode: layoutMode || 'grid',
+            glassEffect: glassEffect ?? true
+        };
+
+        await user.save();
+        res.json({ success: true, style: user.appStyle });
+    } catch (error) {
+        res.status(500).json({ error: "Error al sincronizar estilo" });
+    }
+});
+
+// 2. Modificación sugerida (Asegúrate de que tu ruta de login devuelva 'appStyle')
+// Si ya tienes un router de login, solo asegúrate de incluir el campo en el JSON de respuesta.
+// -------------------------------------------------------
+
+
 // 7. ARRANQUE
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
