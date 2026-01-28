@@ -8,7 +8,7 @@ app.use((req, res, next) => {
     const start = Date.now();
     res.on('finish', () => {
         const duration = Date.now() - start;
-        console.log(`[LOG] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
+        console.log(`[LOG] ${req.method} ${req.path} - \( {res.statusCode} ( \){duration}ms)`);
     });
     next();
 });
@@ -42,11 +42,30 @@ const UsuarioSchema = new mongoose.Schema({
     password: { type: String, required: true },
     reputacion: { type: Number, default: 0 },
     seguidores: { type: Number, default: 0 },
+    verificadoNivel: { type: Number, default: 0, min: 0, max: 3 }, // 0 = ninguno, 1,2,3 niveles
     avatar: { type: String, default: "" },
     fecha: { type: Date, default: Date.now }
 }, { collection: 'usuarios' });
 
+// Índices adicionales para búsquedas rápidas
+UsuarioSchema.index({ verificadoNivel: 1 });
+UsuarioSchema.index({ seguidores: -1 });
+
 const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", UsuarioSchema);
+
+// Helper para actualizar nivel de verificación (solo sube, nunca baja)
+UsuarioSchema.methods.actualizarVerificacionAuto = async function () {
+    let nuevoNivel = 0;
+    if (this.seguidores >= 1000)      nuevoNivel = 3;
+    else if (this.seguidores >= 100)  nuevoNivel = 2;
+    else if (this.seguidores >= 50)   nuevoNivel = 1;
+
+    if (nuevoNivel > this.verificadoNivel) {
+        this.verificadoNivel = nuevoNivel;
+        await this.save();
+        console.log(`[VERIF AUTO] @${this.usuario} subió a nivel \( {nuevoNivel} ( \){this.seguidores} seguidores)`);
+    }
+};
 
 const ComentarioSchema = new mongoose.Schema({
     usuario: String,
@@ -173,10 +192,10 @@ app.delete("/favoritos/delete/:id", async (req, res) => {
 app.post("/auth/login", async (req, res) => {
     try {
         const { usuario, password } = req.body;
-        const user = await Usuario.findOne({ usuario, password }).select('usuario').lean();
+        const user = await Usuario.findOne({ usuario, password }).select('usuario verificadoNivel avatar').lean();
         if (user) {
             console.log(`[AUTH] Login exitoso: @${usuario}`);
-            res.json({ success: true, usuario: user.usuario });
+            res.json({ success: true, usuario: user.usuario, verificadoNivel: user.verificadoNivel || 0 });
         } else {
             console.warn(`[AUTH] Intento fallido: @${usuario}`);
             res.status(401).json({ success: false, mensaje: "Credenciales incorrectas" });
@@ -192,7 +211,7 @@ app.post("/auth/register", async (req, res) => {
         const nuevo = new Usuario({ usuario, password });
         await nuevo.save();
         console.log(`[AUTH] Nuevo registro: @${usuario}`);
-        res.json({ success: true, usuario: nuevo.usuario });
+        res.json({ success: true, usuario: nuevo.usuario, verificadoNivel: 0 });
     } catch (e) { res.status(500).json({ success: false }); }
 });
 
@@ -217,11 +236,40 @@ app.put("/auth/follow/:usuario", async (req, res) => {
         const user = await Usuario.findOneAndUpdate(
             { usuario: req.params.usuario },
             { $inc: { seguidores: valor } },
-            { new: true, lean: true }
+            { new: true }
         );
         if (!user) return res.status(404).json({ success: false });
-        res.json({ success: true, seguidores: user.seguidores });
+
+        // Actualización automática de verificación (solo sube)
+        await user.actualizarVerificacionAuto();
+
+        res.json({ success: true, seguidores: user.seguidores, verificadoNivel: user.verificadoNivel });
     } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// Nueva ruta: actualizar verificación manual (para admin)
+app.put("/auth/admin/verificacion/:usuario", async (req, res) => {
+    try {
+        const { nivel } = req.body;
+        if (!Number.isInteger(nivel) || nivel < 0 || nivel > 3) {
+            return res.status(400).json({ success: false, mensaje: "Nivel inválido (0-3)" });
+        }
+
+        const user = await Usuario.findOneAndUpdate(
+            { usuario: req.params.usuario },
+            { verificadoNivel: nivel },
+            { new: true, lean: true }
+        );
+
+        if (!user) return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
+
+        console.log(`[VERIF MANUAL] @${user.usuario} establecido a nivel ${nivel} por admin`);
+
+        res.json({ success: true, verificadoNivel: user.verificadoNivel });
+    } catch (e) {
+        console.error("[ERR_VERIF_MANUAL]", e);
+        res.status(500).json({ success: false });
+    }
 });
 
 app.put("/auth/update-avatar", async (req, res) => {
