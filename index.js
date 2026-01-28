@@ -3,214 +3,249 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const app = express();
 
-// --- MIDDLEWARE ---
+// --- SISTEMA DE LOGS (Auditoría en tiempo real) ---
+app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        console.log(`[LOG] ${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
+    });
+    next();
+});
+
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '1mb' }));
 
-// --- DATABASE CONNECTION ---
+// 1. CONEXIÓN A MONGODB (Pool de conexiones optimizado)
 const uri = "mongodb+srv://adminupgames2026:78simon87@cluster0.turx6r1.mongodb.net/UpGames?retryWrites=true&w=majority";
-mongoose.connect(uri)
-  .then(() => console.log("🚀 CORE SYSTEM ONLINE: Universal English Variables Synced"))
-  .catch(err => console.error("❌ CONNECTION ERROR:", err));
+mongoose.connect(uri, { maxPoolSize: 10 })
+  .then(() => console.log("🚀 NÚCLEO CLOUD CONECTADO Y RASTREADO"))
+  .catch(err => console.error("❌ CRITICAL_ERROR CONEXIÓN:", err));
 
-// --- DATA MODELS ---
-
-const UserSchema = new mongoose.Schema({
-    username: { type: String, required: true, unique: true, index: true },
-    password: { type: String, required: true },
-    avatar: { type: String, default: "" },
-    isVerified: { type: Boolean, default: false },
-    rank: { type: String, default: "user" }, 
-    followers: { type: Number, default: 0 },
-    appStyle: {
-        themeColor: { type: String, default: '#5EFF43' },
-        layoutMode: { type: String, default: 'grid' }
-    }
-}, { timestamps: true });
-
-const User = mongoose.model("User", UserSchema);
-
-const ItemSchema = new mongoose.Schema({
-    username: { type: String, index: true }, 
+// 2. MODELOS DE DATOS CON ÍNDICES
+const JuegoSchema = new mongoose.Schema({
+    usuario: { type: String, default: "Cloud User", index: true },
     title: { type: String, required: true },
     description: String,
     image: String,
     link: String,
-    status: { type: String, default: "pending", index: true }, 
+    status: { type: String, default: "pendiente", index: true },
+    reportes: { type: Number, default: 0 },
     category: { type: String, default: "General" },
-    reports: { type: Number, default: 0 }
+    tags: [String]
 }, { timestamps: true });
 
-const Item = mongoose.model('Item', ItemSchema);
+const Juego = mongoose.models.Juego || mongoose.model('Juego', JuegoSchema);
 
-const FavoriteSchema = new mongoose.Schema({
-    username: String,
-    itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Item' }
+const UsuarioSchema = new mongoose.Schema({
+    usuario: { type: String, required: true, unique: true, index: true },
+    password: { type: String, required: true },
+    reputacion: { type: Number, default: 0 },
+    seguidores: { type: Number, default: 0 },
+    avatar: { type: String, default: "" },
+    fecha: { type: Date, default: Date.now }
+}, { collection: 'usuarios' });
+
+const Usuario = mongoose.models.Usuario || mongoose.model("Usuario", UsuarioSchema);
+
+const ComentarioSchema = new mongoose.Schema({
+    usuario: String,
+    texto: String,
+    itemId: { type: String, index: true },
+    fecha: { type: Date, default: Date.now }
 });
 
-const Favorite = mongoose.model('Favorite', FavoriteSchema);
+const Comentario = mongoose.models.Comentario || mongoose.model('Comentario', ComentarioSchema);
 
-const CommentSchema = new mongoose.Schema({
-    username: String, 
-    text: String, 
-    itemId: String, 
-    date: { type: Date, default: Date.now }
+const FavoritoSchema = new mongoose.Schema({
+    usuario: { type: String, index: true },
+    itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego', index: true }
 });
 
-const Comment = mongoose.model('Comment', CommentSchema);
+const Favorito = mongoose.models.Favorito || mongoose.model('Favorito', FavoritoSchema);
 
-// --- API ROUTES ---
-
-// [1. AUTHENTICATION & PROFILE]
-app.post("/auth/login", async (req, res) => {
-    // AJUSTE: Acepta tanto 'username' como 'usuario' para compatibilidad total
-    const username = req.body.username || req.body.usuario;
-    const { password } = req.body;
-    const user = await User.findOne({ username, password });
-    if (user) res.json({ success: true, ...user._doc });
-    else res.status(401).json({ success: false, message: "Invalid credentials" });
-});
-
-app.post("/auth/register", async (req, res) => {
-    const username = req.body.username || req.body.usuario;
-    const { password } = req.body;
-    const exists = await User.findOne({ username });
-    if (exists) return res.status(400).json({ success: false, message: "User already exists" });
-    const newUser = new User({ username, password });
-    await newUser.save();
-    res.json({ success: true, username: newUser.username });
-});
-
-app.get("/auth/user/:username", async (req, res) => {
-    const user = await User.findOne({ username: req.params.username }).select('-password');
-    res.json(user);
-});
-
-app.get("/auth/users", async (req, res) => {
-    const users = await User.find().select('-password');
-    res.json(users);
-});
-
-app.put("/auth/update-avatar", async (req, res) => {
-    await User.findOneAndUpdate({ username: req.body.username }, { avatar: req.body.newPhoto });
-    res.json({ success: true });
-});
-
-app.put("/auth/follow/:target", async (req, res) => {
-    const value = req.body.action === "increase" ? 1 : -1;
-    await User.findOneAndUpdate({ username: req.params.target }, { $inc: { followers: value } });
-    res.json({ ok: true });
-});
-
-// [2. APP STYLE & AURA]
-app.post('/api/user/update-style', async (req, res) => {
-    const { username, themeColor } = req.body;
-    await User.findOneAndUpdate({ username }, { $set: { "appStyle.themeColor": themeColor } });
-    res.json({ success: true });
-});
-
-// [3. ITEMS & CONTENT MANAGEMENT]
+// 3. RUTAS DE JUEGOS
 app.get("/items", async (req, res) => {
-    const items = await Item.find().sort({ createdAt: -1 });
-    res.json(items);
+    try {
+        const juegos = await Juego.find().sort({ createdAt: -1 }).lean();
+        res.json(juegos);
+    } catch (error) { 
+        console.error(`[ERR_ITEMS] ${error.message}`);
+        res.status(500).json({ error: "Internal Error" }); 
+    }
 });
 
-app.get("/items/user/:username", async (req, res) => {
-    const items = await Item.find({ username: req.params.username });
-    res.json(items);
+app.get("/items/user/:usuario", async (req, res) => {
+    try {
+        const aportes = await Juego.find({ usuario: req.params.usuario }).sort({ createdAt: -1 }).lean();
+        res.json(aportes);
+    } catch (error) { res.status(500).json([]); }
 });
 
 app.post("/items/add", async (req, res) => {
-    // AJUSTE: Normalización de datos recibidos
-    const data = {
-        ...req.body,
-        username: req.body.username || req.body.usuario,
-        category: req.body.category || req.body.categoria,
-        status: "pending"
-    };
-    const newItem = new Item(data);
-    await newItem.save();
-    res.json({ ok: true });
+    try {
+        const nuevoJuego = new Juego({ ...req.body, status: "pendiente" });
+        await nuevoJuego.save();
+        res.status(201).json({ ok: true });
+    } catch (error) { 
+        console.error(`[ERR_ADD_ITEM] Data: ${JSON.stringify(req.body)} - ${error.message}`);
+        res.status(500).json({ error: "Error al guardar aporte" }); 
+    }
 });
 
 app.put("/items/approve/:id", async (req, res) => {
-    await Item.findByIdAndUpdate(req.params.id, { status: "approved" });
-    res.json({ ok: true });
-});
-
-app.put("/items/report/:id", async (req, res) => {
-    const item = await Item.findByIdAndUpdate(req.params.id, { $inc: { reports: 1 } }, { new: true });
-    if (item.reports >= 10) await Item.findByIdAndUpdate(req.params.id, { status: "pending" });
-    res.json({ ok: true, reports: item.reports });
+    try {
+        await Juego.findByIdAndUpdate(req.params.id, { $set: { status: "aprobado" } });
+        res.json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error de aprobación" }); }
 });
 
 app.delete("/items/:id", async (req, res) => {
-    await Item.findByIdAndDelete(req.params.id);
-    res.json({ ok: true });
+    try {
+        await Juego.findByIdAndDelete(req.params.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error al eliminar" }); }
 });
 
-// [4. VAULT / FAVORITES]
-app.get("/favorites/:username", async (req, res) => {
-    const list = await Favorite.find({ username: req.params.username }).populate('itemId');
-    const validItems = list.filter(f => f.itemId).map(f => ({ ...f.itemId._doc, favId: f._id }));
-    res.json(validItems);
+app.put("/items/report/:id", async (req, res) => {
+    try {
+        const juego = await Juego.findByIdAndUpdate(req.params.id, { $inc: { reportes: 1 } }, { new: true, lean: true });
+        res.json({ ok: true, reportes: juego.reportes });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-app.post("/favorites/add", async (req, res) => {
-    const { username, itemId } = req.body;
-    const exists = await Favorite.findOne({ username, itemId });
-    if (!exists) await new Favorite({ username, itemId }).save();
-    res.json({ ok: true });
+// 4. RUTAS DE COMENTARIOS
+app.get("/comentarios", async (req, res) => {
+    try {
+        const comentarios = await Comentario.find().sort({ fecha: -1 }).lean();
+        res.json(comentarios);
+    } catch (error) { res.status(500).json([]); }
 });
 
-app.delete("/favorites/delete/:id", async (req, res) => {
-    await Favorite.findByIdAndDelete(req.params.id);
-    res.json({ ok: true });
+app.get("/comentarios/:id", async (req, res) => {
+    try {
+        const comentarios = await Comentario.find({ itemId: req.params.id }).sort({ fecha: -1 }).lean();
+        res.json(comentarios);
+    } catch (error) { res.status(500).json([]); }
 });
 
-// [5. COMMENTS]
-
-// NUEVA RUTA: Obtener TODOS los comentarios para el Panel Admin
-app.get("/comments/all", async (req, res) => {
-    const c = await Comment.find().sort({ date: -1 });
-    res.json(c);
+app.post("/comentarios", async (req, res) => {
+    try {
+        const nuevo = new Comentario(req.body);
+        await nuevo.save();
+        res.status(201).json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-app.get("/comments/:id", async (req, res) => {
-    const c = await Comment.find({ itemId: req.params.id }).sort({ date: -1 });
-    res.json(c);
+app.delete("/comentarios/:id", async (req, res) => {
+    try {
+        await Comentario.findByIdAndDelete(req.params.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-app.post("/comments", async (req, res) => {
-    const data = {
-        ...req.body,
-        username: req.body.username || req.body.usuario,
-        text: req.body.text || req.body.texto
-    };
-    await new Comment(data).save();
-    res.json({ ok: true });
+// 5. RUTAS DE FAVORITOS
+app.post("/favoritos/add", async (req, res) => {
+    try {
+        const { usuario, itemId } = req.body;
+        const existe = await Favorito.findOne({ usuario, itemId }).lean();
+        if (existe) return res.status(400).json({ mensaje: "Ya existe" });
+        await new Favorito({ usuario, itemId }).save();
+        res.json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// NUEVA RUTA: Borrar comentario desde Admin
-app.delete("/comments/:id", async (req, res) => {
-    await Comment.findByIdAndDelete(req.params.id);
-    res.json({ ok: true });
+app.get("/favoritos/:usuario", async (req, res) => {
+    try {
+        const lista = await Favorito.find({ usuario: req.params.usuario }).populate('itemId').lean();
+        res.json(lista);
+    } catch (error) { res.status(500).json([]); }
 });
 
-// [6. ADMIN CONTROL]
-app.put("/auth/admin/update-rank", async (req, res) => {
-    const { id, isVerified, rank } = req.body;
-    await User.findByIdAndUpdate(id, { isVerified, rank });
-    res.json({ success: true });
+app.delete("/favoritos/delete/:id", async (req, res) => {
+    try {
+        await Favorito.findByIdAndDelete(req.params.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
+});
+
+// 6. USUARIOS Y AUTH
+app.post("/auth/login", async (req, res) => {
+    try {
+        const { usuario, password } = req.body;
+        const user = await Usuario.findOne({ usuario, password }).select('usuario').lean();
+        if (user) {
+            console.log(`[AUTH] Login exitoso: @${usuario}`);
+            res.json({ success: true, usuario: user.usuario });
+        } else {
+            console.warn(`[AUTH] Intento fallido: @${usuario}`);
+            res.status(401).json({ success: false, mensaje: "Credenciales incorrectas" });
+        }
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.post("/auth/register", async (req, res) => {
+    try {
+        const { usuario, password } = req.body;
+        const existe = await Usuario.findOne({ usuario }).select('_id').lean();
+        if (existe) return res.status(400).json({ success: false, mensaje: "Usuario ya existe" });
+        const nuevo = new Usuario({ usuario, password });
+        await nuevo.save();
+        console.log(`[AUTH] Nuevo registro: @${usuario}`);
+        res.json({ success: true, usuario: nuevo.usuario });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.get("/auth/users", async (req, res) => {
+    try {
+        const usuarios = await Usuario.find().select('-password').lean();
+        res.json(usuarios);
+    } catch (error) { res.status(500).json([]); }
 });
 
 app.delete("/auth/users/:id", async (req, res) => {
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ ok: true });
+    try {
+        await Usuario.findByIdAndDelete(req.params.id);
+        res.json({ ok: true });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-// --- SERVER START ---
+app.put("/auth/follow/:usuario", async (req, res) => {
+    try {
+        const { accion } = req.body; 
+        const valor = accion === "incrementar" ? 1 : -1;
+        const user = await Usuario.findOneAndUpdate(
+            { usuario: req.params.usuario },
+            { $inc: { seguidores: valor } },
+            { new: true, lean: true }
+        );
+        if (!user) return res.status(404).json({ success: false });
+        res.json({ success: true, seguidores: user.seguidores });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+app.put("/auth/update-avatar", async (req, res) => {
+    try {
+        const { usuario, nuevaFoto } = req.body;
+        await Usuario.findOneAndUpdate({ usuario }, { $set: { avatar: nuevaFoto } });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// --- CAPTURADOR DE ERRORES GLOBAL (Para evitar caídas) ---
+app.use((err, req, res, next) => {
+    console.error(`[CRASH_PREVENT] Error en ${req.method} ${req.path}:`, err.stack);
+    res.status(500).json({ error: "Critical System Error" });
+});
+
+// 7. ARRANQUE
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ UP GAMES SERVER READY ON PORT ${PORT}`);
+    console.log(`
+    =========================================
+    ✅ NÚCLEO ACTIVO EN PUERTO ${PORT}
+    📡 MONITOREO DE LOGS: ACTIVADO
+    🛡️ PROTECCIÓN DE CRASH: ACTIVADA
+    =========================================
+    `);
 });
