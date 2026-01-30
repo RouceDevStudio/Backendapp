@@ -265,11 +265,11 @@ const UsuarioSchema = new mongoose.Schema({
     },
     listaSeguidores: [{ 
         type: String,
-        trim: true
+        default: 0
     }],
     siguiendo: [{
         type: String,
-        trim: true
+        default: 0
     }],
     seguidores: { 
         type: Number, 
@@ -2505,10 +2505,50 @@ app.get("/search", async (req, res) => {
     }
 });
 
-// ========== SISTEMA DE SEGUIMIENTO DE USUARIOS ==========
+
+// SISTEMA DE SEGUIDORES (FOLLOW / UNFOLLOW)
+// ==========================================
+app.post('/usuarios/toggle-seguir', verificarToken, async (req, res) => {
+    const { usuarioDestino, seguidor } = req.body;
+
+    if (usuarioDestino === seguidor) {
+        return res.status(400).json({ success: false, mensaje: "No puedes seguirte a ti mismo" });
+    }
+
+    try {
+        const objetivo = await Usuario.findOne({ usuario: usuarioDestino });
+        const yo = await Usuario.findOne({ usuario: seguidor });
+
+        if (!objetivo || !yo) return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
+
+        const yaLoSigo = objetivo.listaSeguidores.includes(seguidor);
+
+        if (yaLoSigo) {
+            objetivo.listaSeguidores = objetivo.listaSeguidores.filter(u => u !== seguidor);
+            yo.listaSiguiendo = yo.siguiendo.filter(u => u !== usuarioDestino);
+        } else {
+            objetivo.listaSeguidores.push(seguidor);
+            yo.siguiendo.push(usuarioDestino);
+        }
+
+        await objetivo.save();
+        await yo.save();
+
+        res.json({ 
+            success: true, 
+            siguiendo: !yaLoSigo, 
+            seguidoresCount: objetivo.listaSeguidores.length,
+            siguiendoCount: yo.siguiendo.length
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Luego de esto deberían seguir tus rutas de app.get('/items', ... )
+
 
 // 1. Seguir a un usuario
-});
 
 // ========== HEALTH CHECK ==========
 app.get("/health", (req, res) => {
