@@ -41,11 +41,14 @@ const UsuarioSchema = new mongoose.Schema({
     usuario: { type: String, required: true, unique: true, index: true },
     password: { type: String, required: true },
     reputacion: { type: Number, default: 0 },
+    // ESTA ES LA LÍNEA QUE AGREGAMOS:
+    listaSeguidores: { type: [String], default: [] }, 
     seguidores: { type: Number, default: 0 },
-    verificadoNivel: { type: Number, default: 0, min: 0, max: 3 }, // 0 = ninguno, 1,2,3 niveles
+    verificadoNivel: { type: Number, default: 0, min: 0, max: 3 },
     avatar: { type: String, default: "" },
     fecha: { type: Date, default: Date.now }
 }, { collection: 'usuarios' });
+
 
 // Índices adicionales para búsquedas rápidas
 UsuarioSchema.index({ verificadoNivel: 1 });
@@ -231,21 +234,45 @@ app.delete("/auth/users/:id", async (req, res) => {
 
 app.put("/auth/follow/:usuario", async (req, res) => {
     try {
-        const { accion } = req.body; 
-        const valor = accion === "incrementar" ? 1 : -1;
+        const { accion, seguidor } = req.body; // 'seguidor' es el nombre del usuario que hace click
+        const target = req.params.usuario;    // 'target' es el dueño del perfil visitado
+
+        let query = {};
+        if (accion === "incrementar") {
+            // $addToSet agrega el nombre al array SOLO si no existe ya (evita duplicados)
+            query = { $addToSet: { listaSeguidores: seguidor } };
+        } else {
+            // $pull elimina el nombre del array
+            query = { $pull: { listaSeguidores: seguidor } };
+        }
+
         const user = await Usuario.findOneAndUpdate(
-            { usuario: req.params.usuario },
-            { $inc: { seguidores: valor } },
+            { usuario: target },
+            query,
             { new: true }
         );
+
         if (!user) return res.status(404).json({ success: false });
 
-        // Actualización automática de verificación (solo sube)
+        // Sincronizamos el contador numérico con el tamaño real de la lista de nombres
+        user.seguidores = user.listaSeguidores.length;
+        await user.save();
+
+        // Ejecuta tu lógica de verificación automática que ya tenías
         await user.actualizarVerificacionAuto();
 
-        res.json({ success: true, seguidores: user.seguidores, verificadoNivel: user.verificadoNivel });
-    } catch (e) { res.status(500).json({ success: false }); }
+        res.json({ 
+            success: true, 
+            seguidores: user.seguidores, 
+            listaSeguidores: user.listaSeguidores,
+            verificadoNivel: user.verificadoNivel 
+        });
+    } catch (e) { 
+        console.error("Error en follow:", e);
+        res.status(500).json({ success: false }); 
+    }
 });
+
 
 // Nueva ruta: actualizar verificación manual (para admin)
 app.put("/auth/admin/verificacion/:usuario", async (req, res) => {
