@@ -234,46 +234,51 @@ app.delete("/auth/users/:id", async (req, res) => {
 
 app.put("/auth/follow/:usuario", async (req, res) => {
     try {
-        const { accion, seguidor } = req.body; // 'seguidor' es el nombre del usuario que hace click
-        const target = req.params.usuario;    // 'target' es el dueño del perfil visitado
-
-        let query = {};
-        if (accion === "incrementar") {
-            // $addToSet agrega el nombre al array SOLO si no existe ya (evita duplicados)
-            query = { $addToSet: { listaSeguidores: seguidor } };
-        } else {
-            // $pull elimina el nombre del array
-            query = { $pull: { listaSeguidores: seguidor } };
+        const { accion, seguidor } = req.body;
+        const target = req.params.usuario;
+        
+        if (!seguidor || !target) {
+            return res.status(400).json({ success: false, mensaje: "Datos incompletos" });
         }
-
-        const user = await Usuario.findOneAndUpdate(
-            { usuario: target },
-            query,
-            { new: true }
-        );
-
-        if (!user) return res.status(404).json({ success: false });
-
-        // Sincronizamos el contador numérico con el tamaño real de la lista de nombres
+        
+        const user = await Usuario.findOne({ usuario: target });
+        if (!user) return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
+        
+        // Inicializar array si no existe
+        if (!user.listaSeguidores) user.listaSeguidores = [];
+        
+        let yaEstaba = user.listaSeguidores.includes(seguidor);
+        
+        if (accion === "incrementar") {
+            if (!yaEstaba) {
+                user.listaSeguidores.push(seguidor);
+            }
+        } else {
+            if (yaEstaba) {
+                user.listaSeguidores = user.listaSeguidores.filter(s => s !== seguidor);
+            }
+        }
+        
+        // CRÍTICO: Sincronizar el contador con la lista real
         user.seguidores = user.listaSeguidores.length;
+        
         await user.save();
-
-        // Ejecuta tu lógica de verificación automática que ya tenías
         await user.actualizarVerificacionAuto();
-
-        res.json({ 
-            success: true, 
-            seguidores: user.seguidores, 
+        
+        console.log(`[FOLLOW] @${seguidor} ${accion === "incrementar" ? "siguió" : "dejó de seguir"} a @${target}. Total: ${user.seguidores}`);
+        
+        res.json({
+            success: true,
+            seguidores: user.seguidores,
             listaSeguidores: user.listaSeguidores,
-            verificadoNivel: user.verificadoNivel 
+            verificadoNivel: user.verificadoNivel,
+            ahoraEstaSiguiendo: user.listaSeguidores.includes(seguidor)
         });
-    } catch (e) { 
-        console.error("Error en follow:", e);
-        res.status(500).json({ success: false }); 
+    } catch (e) {
+        console.error("[ERROR FOLLOW]", e);
+        res.status(500).json({ success: false, mensaje: e.message });
     }
 });
-
-
 // Nueva ruta: actualizar verificación manual (para admin)
 app.put("/auth/admin/verificacion/:usuario", async (req, res) => {
     try {
