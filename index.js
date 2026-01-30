@@ -1100,6 +1100,292 @@ app.get("/auth/:usuario/siguiendo", async (req, res) => {
     }
 });
 
+// ============================================================================
+// 🔥 COPIA ESTE CÓDIGO Y PÉGALO EN TU index.js 
+// DESPUÉS DE LA LÍNEA 1101 (después de las rutas de seguimiento existentes)
+// ============================================================================
+
+// ========== RUTAS ALIAS PARA COMPATIBILIDAD CON FRONTEND ==========
+// Estas rutas son "alias" de las rutas existentes pero con las URLs que espera el frontend
+
+// POST /usuarios/seguir - Alias de PUT /auth/follow/:usuario
+app.post("/usuarios/seguir", async (req, res) => {
+    try {
+        const { seguidor, siguiendo } = req.body;
+
+        // Validar datos
+        if (!seguidor || !siguiendo) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Faltan datos requeridos (seguidor y siguiendo)" 
+            });
+        }
+
+        const target = siguiendo.toLowerCase();
+        const seguidor_lower = seguidor.toLowerCase();
+
+        // No puedes seguirte a ti mismo
+        if (target === seguidor_lower) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "No puedes seguirte a ti mismo" 
+            });
+        }
+
+        // Buscar usuarios
+        const userTarget = await Usuario.findOne({ usuario: target });
+        const userSeguidor = await Usuario.findOne({ usuario: seguidor_lower });
+        
+        if (!userTarget) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Usuario a seguir no encontrado" 
+            });
+        }
+
+        if (!userSeguidor) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Tu usuario no encontrado" 
+            });
+        }
+
+        // Inicializar arrays si no existen
+        if (!userTarget.listaSeguidores) userTarget.listaSeguidores = [];
+        if (!userSeguidor.siguiendo) userSeguidor.siguiendo = [];
+
+        // Verificar si ya sigue
+        if (userTarget.listaSeguidores.includes(seguidor_lower)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Ya sigues a este usuario" 
+            });
+        }
+
+        // Agregar seguimiento
+        userTarget.listaSeguidores.push(seguidor_lower);
+        userSeguidor.siguiendo.push(target);
+
+        // Actualizar contador de seguidores
+        userTarget.seguidores = userTarget.listaSeguidores.length;
+
+        // Guardar cambios
+        await userTarget.save();
+        await userSeguidor.save();
+
+        // Actualizar verificación automática si existe el método
+        if (userTarget.actualizarVerificacionAuto) {
+            await userTarget.actualizarVerificacionAuto();
+        }
+
+        logger.info(`${seguidor_lower} siguió a ${target}`);
+
+        res.json({ 
+            success: true,
+            message: `Ahora sigues a ${siguiendo}`,
+            seguidores: userTarget.seguidores,
+            verificadoNivel: userTarget.verificadoNivel
+        });
+
+    } catch (error) {
+        logger.error('❌ Error en /usuarios/seguir:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor al seguir usuario" 
+        });
+    }
+});
+
+// DELETE /usuarios/dejar-seguir - Dejar de seguir a un usuario
+app.delete("/usuarios/dejar-seguir", async (req, res) => {
+    try {
+        const { seguidor, siguiendo } = req.body;
+
+        // Validar datos
+        if (!seguidor || !siguiendo) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Faltan datos requeridos (seguidor y siguiendo)" 
+            });
+        }
+
+        const target = siguiendo.toLowerCase();
+        const seguidor_lower = seguidor.toLowerCase();
+
+        // Buscar usuarios
+        const userTarget = await Usuario.findOne({ usuario: target });
+        const userSeguidor = await Usuario.findOne({ usuario: seguidor_lower });
+        
+        if (!userTarget || !userSeguidor) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Usuario no encontrado" 
+            });
+        }
+
+        // Inicializar arrays si no existen
+        if (!userTarget.listaSeguidores) userTarget.listaSeguidores = [];
+        if (!userSeguidor.siguiendo) userSeguidor.siguiendo = [];
+
+        // Verificar si realmente sigue al usuario
+        if (!userTarget.listaSeguidores.includes(seguidor_lower)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "No sigues a este usuario" 
+            });
+        }
+
+        // Remover seguimiento
+        userTarget.listaSeguidores = userTarget.listaSeguidores.filter(s => s !== seguidor_lower);
+        userSeguidor.siguiendo = userSeguidor.siguiendo.filter(s => s !== target);
+
+        // Actualizar contador de seguidores
+        userTarget.seguidores = userTarget.listaSeguidores.length;
+
+        // Guardar cambios
+        await userTarget.save();
+        await userSeguidor.save();
+
+        // Actualizar verificación automática si existe el método
+        if (userTarget.actualizarVerificacionAuto) {
+            await userTarget.actualizarVerificacionAuto();
+        }
+
+        logger.info(`${seguidor_lower} dejó de seguir a ${target}`);
+
+        res.json({ 
+            success: true,
+            message: `Dejaste de seguir a ${siguiendo}`,
+            seguidores: userTarget.seguidores
+        });
+
+    } catch (error) {
+        logger.error('❌ Error en /usuarios/dejar-seguir:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor al dejar de seguir" 
+        });
+    }
+});
+
+// GET /usuarios/siguiendo/:usuario - Obtener lista de usuarios que sigue
+app.get("/usuarios/siguiendo/:usuario", async (req, res) => {
+    try {
+        const usuario = await Usuario.findOne({ 
+            usuario: req.params.usuario.toLowerCase() 
+        })
+        .select('siguiendo')
+        .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Usuario no encontrado" 
+            });
+        }
+
+        res.json({
+            success: true,
+            usuario: req.params.usuario,
+            siguiendo: usuario.siguiendo || []
+        });
+
+    } catch (error) {
+        logger.error('❌ Error obteniendo siguiendo:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor" 
+        });
+    }
+});
+
+// GET /usuarios/stats-seguimiento/:usuario - Estadísticas de seguimiento
+app.get("/usuarios/stats-seguimiento/:usuario", async (req, res) => {
+    try {
+        const usuario = await Usuario.findOne({ 
+            usuario: req.params.usuario.toLowerCase() 
+        })
+        .select('listaSeguidores siguiendo seguidores')
+        .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Usuario no encontrado" 
+            });
+        }
+
+        res.json({
+            success: true,
+            stats: {
+                seguidores: usuario.listaSeguidores ? usuario.listaSeguidores.length : 0,
+                siguiendo: usuario.siguiendo ? usuario.siguiendo.length : 0
+            }
+        });
+
+    } catch (error) {
+        logger.error('❌ Error obteniendo estadísticas:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor" 
+        });
+    }
+});
+
+// PUT /usuarios/actualizar-perfil - Actualizar avatar y bio (SIN TOKEN para compatibilidad)
+app.put("/usuarios/actualizar-perfil", async (req, res) => {
+    try {
+        const { usuario, avatar, bio } = req.body;
+
+        if (!usuario) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Usuario requerido" 
+            });
+        }
+
+        const user = await Usuario.findOne({ usuario: usuario.toLowerCase() });
+        
+        if (!user) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Usuario no encontrado" 
+            });
+        }
+
+        // Actualizar avatar si se proporcionó
+        if (avatar !== undefined) {
+            user.avatar = avatar;
+        }
+
+        // Actualizar bio si se proporcionó
+        if (bio !== undefined) {
+            user.bio = bio;
+        }
+
+        await user.save();
+
+        logger.info(`Usuario ${usuario} actualizó su perfil`);
+
+        res.json({ 
+            success: true,
+            message: "Perfil actualizado correctamente",
+            avatar: user.avatar,
+            bio: user.bio
+        });
+
+    } catch (error) {
+        logger.error('❌ Error actualizando perfil:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor" 
+        });
+    }
+});
+
+
+
+
 // ========== PANEL DE ADMINISTRACIÓN ==========
 
 // Listar todos los usuarios (SOLO ADMIN)
