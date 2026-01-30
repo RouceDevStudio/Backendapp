@@ -1108,12 +1108,17 @@ app.get("/auth/:usuario/siguiendo", async (req, res) => {
 // ========== RUTAS ALIAS PARA COMPATIBILIDAD CON FRONTEND ==========
 // Estas rutas son "alias" de las rutas existentes pero con las URLs que espera el frontend
 
-// POST /usuarios/seguir - Alias de PUT /auth/follow/:usuario
+
+// ============================================================================
+// 🔥 RUTAS DE SEGUIMIENTO CORREGIDAS Y OPTIMIZADAS
+// ============================================================================
+
+// 1. Seguir a un usuario
 app.post("/usuarios/seguir", async (req, res) => {
     try {
         const { seguidor, siguiendo } = req.body;
 
-        // Validar datos
+        // Validaciones básicas
         if (!seguidor || !siguiendo) {
             return res.status(400).json({ 
                 success: false, 
@@ -1121,74 +1126,102 @@ app.post("/usuarios/seguir", async (req, res) => {
             });
         }
 
-        const target = siguiendo.toLowerCase();
-        const seguidor_lower = seguidor.toLowerCase();
+        const seguidorLower = seguidor.toLowerCase().trim();
+        const siguiendoLower = siguiendo.toLowerCase().trim();
 
-        // No puedes seguirte a ti mismo
-        if (target === seguidor_lower) {
+        // No puede seguirse a sí mismo
+        if (seguidorLower === siguiendoLower) {
             return res.status(400).json({ 
                 success: false, 
                 message: "No puedes seguirte a ti mismo" 
             });
         }
 
-        // Buscar usuarios
-        const userTarget = await Usuario.findOne({ usuario: target });
-        const userSeguidor = await Usuario.findOne({ usuario: seguidor_lower });
+        // Buscar ambos usuarios
+        const [usuarioSeguidor, usuarioSiguiendo] = await Promise.all([
+            Usuario.findOne({ usuario: seguidorLower }),
+            Usuario.findOne({ usuario: siguiendoLower })
+        ]);
         
-        if (!userTarget) {
+        if (!usuarioSiguiendo) {
             return res.status(404).json({ 
                 success: false, 
-                message: "Usuario a seguir no encontrado" 
+                message: "El usuario que intentas seguir no existe" 
             });
         }
 
-        if (!userSeguidor) {
+        if (!usuarioSeguidor) {
             return res.status(404).json({ 
                 success: false, 
-                message: "Tu usuario no encontrado" 
+                message: "Tu usuario no existe" 
             });
         }
 
-        // Inicializar arrays si no existen
-        if (!userTarget.listaSeguidores) userTarget.listaSeguidores = [];
-        if (!userSeguidor.siguiendo) userSeguidor.siguiendo = [];
+        // Verificar si ya lo sigue
+        const yaSignue = await Seguimiento.findOne({
+            seguidor: seguidorLower,
+            siguiendo: siguiendoLower
+        });
 
-        // Verificar si ya sigue
-        if (userTarget.listaSeguidores.includes(seguidor_lower)) {
+        if (yaSignue) {
             return res.status(400).json({ 
                 success: false, 
                 message: "Ya sigues a este usuario" 
             });
         }
 
-        // Agregar seguimiento
-        userTarget.listaSeguidores.push(seguidor_lower);
-        userSeguidor.siguiendo.push(target);
+        // Crear seguimiento en la colección Seguimiento
+        await Seguimiento.create({
+            seguidor: seguidorLower,
+            siguiendo: siguiendoLower
+        });
 
-        // Actualizar contador de seguidores
-        userTarget.seguidores = userTarget.listaSeguidores.length;
+        // Actualizar arrays en los usuarios (para compatibilidad)
+        if (!usuarioSiguiendo.listaSeguidores) usuarioSiguiendo.listaSeguidores = [];
+        if (!usuarioSeguidor.siguiendo) usuarioSeguidor.siguiendo = [];
 
-        // Guardar cambios
-        await userTarget.save();
-        await userSeguidor.save();
-
-        // Actualizar verificación automática si existe el método
-        if (userTarget.actualizarVerificacionAuto) {
-            await userTarget.actualizarVerificacionAuto();
+        // Agregar a arrays
+        if (!usuarioSiguiendo.listaSeguidores.includes(seguidorLower)) {
+            usuarioSiguiendo.listaSeguidores.push(seguidorLower);
+        }
+        usuarioSiguiendo.seguidores = usuarioSiguiendo.listaSeguidores.length;
+        
+        if (!usuarioSeguidor.siguiendo.includes(siguiendoLower)) {
+            usuarioSeguidor.siguiendo.push(siguiendoLower);
         }
 
-        logger.info(`${seguidor_lower} siguió a ${target}`);
+        // Guardar usuarios
+        await Promise.all([
+            usuarioSiguiendo.save(),
+            usuarioSeguidor.save()
+        ]);
 
-        res.json({ 
-            success: true,
-            message: `Ahora sigues a ${siguiendo}`,
-            seguidores: userTarget.seguidores,
-            verificadoNivel: userTarget.verificadoNivel
+        // Actualizar verificación automática si existe
+        if (usuarioSiguiendo.actualizarVerificacionAuto) {
+            try {
+                await usuarioSiguiendo.actualizarVerificacionAuto();
+            } catch (e) {
+                logger.warn('No se pudo actualizar verificación automática');
+            }
+        }
+
+        logger.info(`✅ ${seguidorLower} comenzó a seguir a ${siguiendoLower}`);
+
+        res.status(201).json({ 
+            success: true, 
+            message: `Ahora sigues a @${siguiendo}`,
+            seguidores: usuarioSiguiendo.seguidores,
+            verificadoNivel: usuarioSiguiendo.verificadoNivel
         });
 
     } catch (error) {
-        logger.error('❌ Error en /usuarios/seguir:', error);
+        if (error.code === 11000) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Ya sigues a este usuario" 
+            });
+        }
+        logger.error('❌ Error al seguir usuario:', error);
         res.status(500).json({ 
             success: false, 
             message: "Error del servidor al seguir usuario" 
@@ -1196,12 +1229,11 @@ app.post("/usuarios/seguir", async (req, res) => {
     }
 });
 
-// DELETE /usuarios/dejar-seguir - Dejar de seguir a un usuario
+// 2. Dejar de seguir a un usuario
 app.delete("/usuarios/dejar-seguir", async (req, res) => {
     try {
         const { seguidor, siguiendo } = req.body;
 
-        // Validar datos
         if (!seguidor || !siguiendo) {
             return res.status(400).json({ 
                 success: false, 
@@ -1209,85 +1241,81 @@ app.delete("/usuarios/dejar-seguir", async (req, res) => {
             });
         }
 
-        const target = siguiendo.toLowerCase();
-        const seguidor_lower = seguidor.toLowerCase();
+        const seguidorLower = seguidor.toLowerCase().trim();
+        const siguiendoLower = siguiendo.toLowerCase().trim();
 
-        // Buscar usuarios
-        const userTarget = await Usuario.findOne({ usuario: target });
-        const userSeguidor = await Usuario.findOne({ usuario: seguidor_lower });
-        
-        if (!userTarget || !userSeguidor) {
+        // Eliminar de la colección Seguimiento
+        const resultado = await Seguimiento.findOneAndDelete({
+            seguidor: seguidorLower,
+            siguiendo: siguiendoLower
+        });
+
+        if (!resultado) {
             return res.status(404).json({ 
                 success: false, 
-                message: "Usuario no encontrado" 
+                message: "No seguías a este usuario" 
             });
         }
 
-        // Inicializar arrays si no existen
-        if (!userTarget.listaSeguidores) userTarget.listaSeguidores = [];
-        if (!userSeguidor.siguiendo) userSeguidor.siguiendo = [];
+        // Actualizar arrays en los usuarios
+        const [usuarioSeguidor, usuarioSiguiendo] = await Promise.all([
+            Usuario.findOne({ usuario: seguidorLower }),
+            Usuario.findOne({ usuario: siguiendoLower })
+        ]);
 
-        // Verificar si realmente sigue al usuario
-        if (!userTarget.listaSeguidores.includes(seguidor_lower)) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "No sigues a este usuario" 
-            });
+        if (usuarioSiguiendo) {
+            // Remover de listaSeguidores
+            if (usuarioSiguiendo.listaSeguidores) {
+                usuarioSiguiendo.listaSeguidores = usuarioSiguiendo.listaSeguidores.filter(
+                    s => s !== seguidorLower
+                );
+                usuarioSiguiendo.seguidores = usuarioSiguiendo.listaSeguidores.length;
+            } else {
+                usuarioSiguiendo.seguidores = Math.max(0, (usuarioSiguiendo.seguidores || 1) - 1);
+            }
+            await usuarioSiguiendo.save();
         }
 
-        // Remover seguimiento
-        userTarget.listaSeguidores = userTarget.listaSeguidores.filter(s => s !== seguidor_lower);
-        userSeguidor.siguiendo = userSeguidor.siguiendo.filter(s => s !== target);
-
-        // Actualizar contador de seguidores
-        userTarget.seguidores = userTarget.listaSeguidores.length;
-
-        // Guardar cambios
-        await userTarget.save();
-        await userSeguidor.save();
-
-        // Actualizar verificación automática si existe el método
-        if (userTarget.actualizarVerificacionAuto) {
-            await userTarget.actualizarVerificacionAuto();
+        if (usuarioSeguidor && usuarioSeguidor.siguiendo) {
+            // Remover de siguiendo
+            usuarioSeguidor.siguiendo = usuarioSeguidor.siguiendo.filter(
+                s => s !== siguiendoLower
+            );
+            await usuarioSeguidor.save();
         }
 
-        logger.info(`${seguidor_lower} dejó de seguir a ${target}`);
+        logger.info(`✅ ${seguidorLower} dejó de seguir a ${siguiendoLower}`);
 
         res.json({ 
-            success: true,
-            message: `Dejaste de seguir a ${siguiendo}`,
-            seguidores: userTarget.seguidores
+            success: true, 
+            message: `Dejaste de seguir a @${siguiendo}` 
         });
 
     } catch (error) {
-        logger.error('❌ Error en /usuarios/dejar-seguir:', error);
+        logger.error('❌ Error al dejar de seguir:', error);
         res.status(500).json({ 
             success: false, 
-            message: "Error del servidor al dejar de seguir" 
+            message: "Error del servidor" 
         });
     }
 });
 
-// GET /usuarios/siguiendo/:usuario - Obtener lista de usuarios que sigue
+// 3. Obtener lista de usuarios que sigue alguien
 app.get("/usuarios/siguiendo/:usuario", async (req, res) => {
     try {
-        const usuario = await Usuario.findOne({ 
-            usuario: req.params.usuario.toLowerCase() 
-        })
-        .select('siguiendo')
-        .lean();
+        const usuario = req.params.usuario.toLowerCase().trim();
 
-        if (!usuario) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "Usuario no encontrado" 
-            });
-        }
+        // Buscar en la colección Seguimiento
+        const seguimientos = await Seguimiento.find({ seguidor: usuario })
+            .select('siguiendo')
+            .lean();
+
+        const listaSiguiendo = seguimientos.map(s => s.siguiendo);
 
         res.json({
             success: true,
             usuario: req.params.usuario,
-            siguiendo: usuario.siguiendo || []
+            siguiendo: listaSiguiendo
         });
 
     } catch (error) {
@@ -1299,27 +1327,74 @@ app.get("/usuarios/siguiendo/:usuario", async (req, res) => {
     }
 });
 
-// GET /usuarios/stats-seguimiento/:usuario - Estadísticas de seguimiento
+// 4. Obtener lista de seguidores de un usuario
+app.get("/usuarios/seguidores/:usuario", async (req, res) => {
+    try {
+        const usuario = req.params.usuario.toLowerCase().trim();
+
+        // Buscar en la colección Seguimiento
+        const seguidores = await Seguimiento.find({ siguiendo: usuario })
+            .select('seguidor')
+            .lean();
+
+        const listaSeguidores = seguidores.map(s => s.seguidor);
+
+        res.json({
+            success: true,
+            usuario: req.params.usuario,
+            seguidores: listaSeguidores
+        });
+
+    } catch (error) {
+        logger.error('❌ Error obteniendo seguidores:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor" 
+        });
+    }
+});
+
+// 5. Verificar si un usuario sigue a otro
+app.get("/usuarios/verifica-seguimiento/:seguidor/:siguiendo", async (req, res) => {
+    try {
+        const seguidor = req.params.seguidor.toLowerCase().trim();
+        const siguiendo = req.params.siguiendo.toLowerCase().trim();
+
+        const existe = await Seguimiento.findOne({
+            seguidor,
+            siguiendo
+        });
+
+        res.json({
+            success: true,
+            estaSiguiendo: !!existe
+        });
+
+    } catch (error) {
+        logger.error('❌ Error verificando seguimiento:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor" 
+        });
+    }
+});
+
+// 6. Obtener estadísticas de seguimiento
 app.get("/usuarios/stats-seguimiento/:usuario", async (req, res) => {
     try {
-        const usuario = await Usuario.findOne({ 
-            usuario: req.params.usuario.toLowerCase() 
-        })
-        .select('listaSeguidores siguiendo seguidores')
-        .lean();
+        const usuario = req.params.usuario.toLowerCase().trim();
 
-        if (!usuario) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "Usuario no encontrado" 
-            });
-        }
+        // Contar en la colección Seguimiento (más preciso)
+        const [cantidadSiguiendo, cantidadSeguidores] = await Promise.all([
+            Seguimiento.countDocuments({ seguidor: usuario }),
+            Seguimiento.countDocuments({ siguiendo: usuario })
+        ]);
 
         res.json({
             success: true,
             stats: {
-                seguidores: usuario.listaSeguidores ? usuario.listaSeguidores.length : 0,
-                siguiendo: usuario.siguiendo ? usuario.siguiendo.length : 0
+                siguiendo: cantidadSiguiendo,
+                seguidores: cantidadSeguidores
             }
         });
 
@@ -1332,7 +1407,7 @@ app.get("/usuarios/stats-seguimiento/:usuario", async (req, res) => {
     }
 });
 
-// PUT /usuarios/actualizar-perfil - Actualizar avatar y bio (SIN TOKEN para compatibilidad)
+// 7. Actualizar perfil (avatar y bio)
 app.put("/usuarios/actualizar-perfil", async (req, res) => {
     try {
         const { usuario, avatar, bio } = req.body;
@@ -1384,11 +1459,27 @@ app.put("/usuarios/actualizar-perfil", async (req, res) => {
 });
 
 
-
-
-// ========== PANEL DE ADMINISTRACIÓN ==========
-
 // Listar todos los usuarios (SOLO ADMIN)
+
+// ========== RUTA PÚBLICA PARA OBTENER USUARIOS (SIN AUTENTICACIÓN) ==========
+// Esta ruta es necesaria para que el frontend pueda obtener niveles de verificación
+app.get("/auth/users-public", async (req, res) => {
+    try {
+        // Obtener todos los usuarios pero solo con campos públicos
+        const usuarios = await Usuario.find({})
+            .select('usuario verificadoNivel avatar bio seguidores')
+            .lean();
+
+        res.json(usuarios);
+    } catch (error) {
+        logger.error('❌ Error obteniendo usuarios públicos:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Error del servidor" 
+        });
+    }
+});
+
 app.get("/auth/users", verificarToken, verificarAdmin, async (req, res) => {
     try {
         const { 
@@ -2417,236 +2508,6 @@ app.get("/search", async (req, res) => {
 // ========== SISTEMA DE SEGUIMIENTO DE USUARIOS ==========
 
 // 1. Seguir a un usuario
-app.post("/usuarios/seguir", async (req, res) => {
-    try {
-        const { seguidor, siguiendo } = req.body;
-
-        // Validaciones básicas
-        if (!seguidor || !siguiendo) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Faltan datos requeridos (seguidor y siguiendo)" 
-            });
-        }
-
-        const seguidorLower = seguidor.toLowerCase().trim();
-        const siguiendoLower = siguiendo.toLowerCase().trim();
-
-        // No puede seguirse a sí mismo
-        if (seguidorLower === siguiendoLower) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "No puedes seguirte a ti mismo" 
-            });
-        }
-
-        // Verificar que el usuario a seguir existe
-        const usuarioExiste = await Usuario.findOne({ usuario: siguiendoLower });
-        
-        if (!usuarioExiste) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "El usuario que intentas seguir no existe" 
-            });
-        }
-
-        // Verificar si ya lo sigue
-        const yaSignue = await Seguimiento.findOne({
-            seguidor: seguidorLower,
-            siguiendo: siguiendoLower
-        });
-
-        if (yaSignue) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Ya sigues a este usuario" 
-            });
-        }
-
-        // Crear seguimiento
-        await Seguimiento.create({
-            seguidor: seguidorLower,
-            siguiendo: siguiendoLower
-        });
-
-        // Actualizar contador de seguidores del usuario seguido
-        await Usuario.findOneAndUpdate(
-            { usuario: siguiendoLower },
-            { $inc: { seguidores: 1 } }
-        );
-
-        logger.info(`✅ ${seguidorLower} comenzó a seguir a ${siguiendoLower}`);
-
-        res.status(201).json({ 
-            success: true, 
-            message: `Ahora sigues a @${siguiendo}` 
-        });
-
-    } catch (error) {
-        if (error.code === 11000) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Ya sigues a este usuario" 
-            });
-        }
-        logger.error('❌ Error al seguir usuario:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Error del servidor al seguir usuario" 
-        });
-    }
-});
-
-// 2. Dejar de seguir a un usuario
-app.delete("/usuarios/dejar-seguir", async (req, res) => {
-    try {
-        const { seguidor, siguiendo } = req.body;
-
-        if (!seguidor || !siguiendo) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Faltan datos requeridos (seguidor y siguiendo)" 
-            });
-        }
-
-        const seguidorLower = seguidor.toLowerCase().trim();
-        const siguiendoLower = siguiendo.toLowerCase().trim();
-
-        const resultado = await Seguimiento.findOneAndDelete({
-            seguidor: seguidorLower,
-            siguiendo: siguiendoLower
-        });
-
-        if (!resultado) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "No seguías a este usuario" 
-            });
-        }
-
-        // Actualizar contador de seguidores del usuario
-        await Usuario.findOneAndUpdate(
-            { usuario: siguiendoLower },
-            { $inc: { seguidores: -1 } }
-        );
-
-        logger.info(`💔 ${seguidorLower} dejó de seguir a ${siguiendoLower}`);
-
-        res.json({ 
-            success: true, 
-            message: `Dejaste de seguir a @${siguiendo}` 
-        });
-
-    } catch (error) {
-        logger.error('❌ Error al dejar de seguir:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Error del servidor al dejar de seguir" 
-        });
-    }
-});
-
-// 3. Obtener lista de usuarios que sigue
-app.get("/usuarios/siguiendo/:usuario", async (req, res) => {
-    try {
-        const usuario = req.params.usuario.toLowerCase().trim();
-        
-        const seguimientos = await Seguimiento.find({ seguidor: usuario })
-            .select('siguiendo')
-            .lean();
-
-        const siguiendo = seguimientos.map(s => s.siguiendo);
-
-        res.json({
-            success: true,
-            siguiendo,
-            total: siguiendo.length
-        });
-
-    } catch (error) {
-        logger.error('❌ Error obteniendo lista de siguiendo:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Error del servidor al obtener siguiendo" 
-        });
-    }
-});
-
-// 4. Obtener lista de seguidores
-app.get("/usuarios/seguidores/:usuario", async (req, res) => {
-    try {
-        const usuario = req.params.usuario.toLowerCase().trim();
-        
-        const seguimientos = await Seguimiento.find({ siguiendo: usuario })
-            .select('seguidor')
-            .lean();
-
-        const seguidores = seguimientos.map(s => s.seguidor);
-
-        res.json({
-            success: true,
-            seguidores,
-            total: seguidores.length
-        });
-
-    } catch (error) {
-        logger.error('❌ Error obteniendo seguidores:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Error del servidor al obtener seguidores" 
-        });
-    }
-});
-
-// 5. Verificar si un usuario sigue a otro
-app.get("/usuarios/verifica-seguimiento/:seguidor/:siguiendo", async (req, res) => {
-    try {
-        const { seguidor, siguiendo } = req.params;
-
-        const existe = await Seguimiento.findOne({
-            seguidor: seguidor.toLowerCase().trim(),
-            siguiendo: siguiendo.toLowerCase().trim()
-        });
-
-        res.json({
-            success: true,
-            siguiendo: !!existe
-        });
-
-    } catch (error) {
-        logger.error('❌ Error verificando seguimiento:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Error del servidor al verificar seguimiento" 
-        });
-    }
-});
-
-// 6. Obtener estadísticas de seguimiento de un usuario
-app.get("/usuarios/stats-seguimiento/:usuario", async (req, res) => {
-    try {
-        const usuario = req.params.usuario.toLowerCase().trim();
-
-        const [seguidores, siguiendo] = await Promise.all([
-            Seguimiento.countDocuments({ siguiendo: usuario }),
-            Seguimiento.countDocuments({ seguidor: usuario })
-        ]);
-
-        res.json({
-            success: true,
-            stats: {
-                seguidores,
-                siguiendo
-            }
-        });
-
-    } catch (error) {
-        logger.error('❌ Error obteniendo estadísticas de seguimiento:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Error del servidor al obtener estadísticas" 
-        });
-    }
 });
 
 // ========== HEALTH CHECK ==========
