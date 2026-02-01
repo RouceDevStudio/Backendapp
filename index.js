@@ -252,49 +252,6 @@ app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
     }
 });
 
-// ✅ RUTA PARA GUARDAR/QUITAR DE LA BÓVEDA (Backend)
-app.post('/favoritos/toggle', async (req, res) => {
-    try {
-        const { usuario, juegoId } = req.body;
-        const user = await Usuario.findOne({ usuario: usuario.toLowerCase() });
-
-        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-
-        // Convertimos el juegoId a ObjectId para que MongoDB lo reconozca
-        const oid = new mongoose.Types.ObjectId(juegoId);
-        
-        const index = user.favoritos.indexOf(oid);
-        let mensaje = "";
-
-        if (index > -1) {
-            user.favoritos.splice(index, 1); // Lo quita si ya existe
-            mensaje = "Eliminado de la bóveda";
-        } else {
-            user.favoritos.push(oid); // Lo agrega si no existe
-            mensaje = "Agregado a la bóveda";
-        }
-
-        await user.save();
-        res.json({ success: true, mensaje, total: user.favoritos.length });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// ✅ RUTA PARA CARGAR LA BÓVEDA
-app.get('/favoritos/:usuario', async (req, res) => {
-    try {
-        const user = await Usuario.findOne({ usuario: req.params.usuario.toLowerCase() })
-            .populate('favoritos'); // Esto trae los datos del juego, no solo el ID
-
-        if (!user) return res.status(404).json({ success: false });
-
-        res.json({ success: true, favoritos: user.favoritos || [] });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
 
 // Mét para actualizar verificación automática
 UsuarioSchema.methods.actualizarVerificacionAuto = async function() {
@@ -620,7 +577,7 @@ app.delete("/comentarios/:id", [
 
 // ========== RUTAS DE FAVORITOS ==========
 
-// Agregar a favoritos
+// ✅ Agregar a favoritos - MEJORADO
 app.post("/favoritos/add", [
     body('usuario').notEmpty().trim(),
     body('itemId').isMongoId()
@@ -636,7 +593,21 @@ app.post("/favoritos/add", [
 
         const { usuario, itemId } = req.body;
         
-        const existe = await Favorito.findOne({ usuario, itemId }).lean();
+        // ✅ Verificar si el item existe
+        const itemExiste = await Juego.findById(itemId);
+        if (!itemExiste) {
+            return res.status(404).json({ 
+                success: false,
+                mensaje: "El item no existe" 
+            });
+        }
+        
+        // ✅ Verificar si ya está en favoritos
+        const existe = await Favorito.findOne({ 
+            usuario: usuario.toLowerCase().trim(), 
+            itemId 
+        }).lean();
+        
         if (existe) {
             return res.status(400).json({ 
                 success: false,
@@ -644,13 +615,21 @@ app.post("/favoritos/add", [
             });
         }
         
-        await new Favorito({ usuario, itemId }).save();
+        // Crear favorito
+        await new Favorito({ 
+            usuario: usuario.toLowerCase().trim(), 
+            itemId 
+        }).save();
+        
+        console.log(`💾 @${usuario} agregó ${itemExiste.title} a favoritos`);
         
         res.json({ 
             success: true,
-            ok: true 
+            ok: true,
+            mensaje: "Agregado a favoritos"
         });
     } catch (error) { 
+        console.error('[ERROR /favoritos/add]:', error);
         if (error.code === 11000) {
             return res.status(400).json({ 
                 success: false,
@@ -664,19 +643,55 @@ app.post("/favoritos/add", [
     }
 });
 
-// Obtener favoritos de un usuario
+// ✅ Obtener favoritos de un usuario - MEJORADO CON DATOS COMPLETOS
 app.get("/favoritos/:usuario", async (req, res) => {
     try {
-        const lista = await Favorito.find({ 
-            usuario: req.params.usuario 
-        }).populate('itemId').lean();
-        res.json(lista);
+        const usuario = req.params.usuario.toLowerCase().trim();
+        
+        console.log(`📂 Cargando favoritos de: @${usuario}`);
+        
+        // Buscar favoritos y hacer populate completo
+        const favoritos = await Favorito.find({ usuario })
+            .populate({
+                path: 'itemId',
+                select: '_id title description image link category usuario status reportes'
+            })
+            .lean()
+            .exec();
+        
+        console.log(`✅ Encontrados ${favoritos.length} favoritos para @${usuario}`);
+        
+        // ✅ FILTRAR items que no existen (fueron eliminados) y mapear correctamente
+        const favoritosValidos = favoritos
+            .filter(fav => fav.itemId !== null) // Eliminar referencias rotas
+            .map(fav => ({
+                _id: fav.itemId._id, // ID del juego
+                title: fav.itemId.title,
+                description: fav.itemId.description,
+                image: fav.itemId.image,
+                link: fav.itemId.link,
+                category: fav.itemId.category,
+                usuario: fav.itemId.usuario,
+                status: fav.itemId.status,
+                reportes: fav.itemId.reportes,
+                favoritoId: fav._id // ✅ ID del favorito para poder eliminarlo
+            }));
+        
+        console.log(`📊 Favoritos válidos: ${favoritosValidos.length}`);
+        
+        res.json(favoritosValidos);
+        
     } catch (error) { 
-        res.status(500).json([]); 
+        console.error('[ERROR /favoritos/:usuario]:', error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error al cargar favoritos",
+            mensaje: error.message
+        }); 
     }
 });
 
-// Eliminar de favoritos
+// ✅ Eliminar de favoritos - MEJORADO
 app.delete("/favoritos/delete/:id", [
     param('id').isMongoId()
 ], async (req, res) => {
@@ -689,9 +704,24 @@ app.delete("/favoritos/delete/:id", [
             });
         }
 
-        await Favorito.findByIdAndDelete(req.params.id);
-        res.json({ success: true, ok: true });
+        const favoritoEliminado = await Favorito.findByIdAndDelete(req.params.id);
+        
+        if (!favoritoEliminado) {
+            return res.status(404).json({ 
+                success: false, 
+                mensaje: "Favorito no encontrado" 
+            });
+        }
+        
+        console.log(`🗑️ Favorito eliminado: ${req.params.id}`);
+        
+        res.json({ 
+            success: true, 
+            ok: true,
+            mensaje: "Eliminado de favoritos"
+        });
     } catch (error) { 
+        console.error('[ERROR /favoritos/delete]:', error);
         res.status(500).json({ 
             success: false,
             error: "Error al eliminar" 
