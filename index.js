@@ -205,20 +205,21 @@ const UsuarioSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// ========== RUTAS DE PERFIL CORREGIDAS ==========
+// ==========================================
+// ✅ RUTAS DE PERFIL (PONER ARRIBA DEL 404)
+// ==========================================
 
-// 1. Obtener Perfil (Asegúrate de que esto esté ANTES del middleware de error 404)
 app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
     try {
         const username = req.params.usuario.toLowerCase().trim();
-        // Buscamos al usuario
+        // Usamos una búsqueda insensible a mayúsculas para evitar errores
         const user = await Usuario.findOne({ usuario: username }).select('-password').lean();
 
         if (!user) {
             return res.status(404).json({ success: false, error: "Usuario no encontrado" });
         }
 
-        // Buscamos sus juegos aprobados
+        // Buscamos los juegos aprobados del usuario
         const publicaciones = await Juego.countDocuments({ 
             usuario: user.usuario, 
             status: 'aprobado' 
@@ -228,24 +229,25 @@ app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
             success: true,
             usuario: {
                 ...user,
-                publicaciones: publicaciones,
+                publicaciones,
+                // Corregimos para que use los arrays de tu Schema
                 seguidores: user.listaSeguidores ? user.listaSeguidores.length : 0,
                 siguiendo: user.siguiendo ? user.siguiendo.length : 0
             }
         });
     } catch (err) {
-        console.error("Error en perfil:", err);
-        res.status(500).json({ success: false, error: "Error interno del servidor" });
+        res.status(500).json({ success: false, error: "Error al cargar perfil" });
     }
 });
 
-// 2. Verificar seguimiento
 app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
     try {
-        const userActual = await Usuario.findOne({ usuario: req.params.actual.toLowerCase().trim() });
-        const estaSiguiendo = userActual?.siguiendo?.includes(req.params.viendo.toLowerCase().trim());
-        res.json({ estaSiguiendo: !!estaSiguiendo });
-    } catch (error) {
+        const actual = req.params.actual.toLowerCase().trim();
+        const viendo = req.params.viendo.toLowerCase().trim();
+        const user = await Usuario.findOne({ usuario: actual });
+        const loSigo = user?.siguiendo?.includes(viendo);
+        res.json({ estaSiguiendo: !!loSigo });
+    } catch (err) {
         res.json({ estaSiguiendo: false });
     }
 });
@@ -863,76 +865,65 @@ app.delete("/auth/users/:id", [
 });
 
 // Seguir/Dejar de seguir
-app.put("/auth/follow/:usuario", [
-    body('accion').isIn(['incrementar', 'decrementar']),
-    body('seguidor').notEmpty().trim()
-], async (req, res) => {
+// ✅ VERSIÓN CORREGIDA Y SEGURA (REEMPLAZA LA TUYA)
+app.put('/auth/follow/:usuario', async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Datos inválidos" 
-            });
-        }
+        // 1. Validar Token
+        const authHeader = req.headers.authorization;
+        if (!authHeader) return res.status(401).json({ success: false, error: "No autorizado" });
 
-        const { accion, seguidor } = req.body;
-        const target = req.params.usuario.toLowerCase();
-
-        let query = {};
-        let queryContrario = {};
+        const token = authHeader.split(' ')[1];
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
         
-        if (accion === "incrementar") {
-            // Agregar seguidor a la lista del target
-            query = { $addToSet: { listaSeguidores: seguidor } };
-            // Agregar target a la lista de "siguiendo" del seguidor
-            queryContrario = { $addToSet: { siguiendo: target } };
+        const nombreSeguidor = decoded.usuario.toLowerCase().trim(); // El que hace click
+        const nombreTarget = req.params.usuario.toLowerCase().trim(); // El dueño del perfil
+
+        if (nombreSeguidor === nombreTarget) {
+            return res.status(400).json({ success: false, error: "No puedes seguirte a ti mismo" });
+        }
+
+        // 2. Buscar ambos usuarios
+        const yo = await Usuario.findOne({ usuario: nombreSeguidor });
+        const el = await Usuario.findOne({ usuario: nombreTarget });
+
+        if (!yo || !el) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        }
+
+        // 3. Lógica Toggle Automática
+        let isFollowing = yo.siguiendo.includes(nombreTarget);
+        
+        if (isFollowing) {
+            // DEJAR DE SEGUIR
+            yo.siguiendo = yo.siguiendo.filter(u => u !== nombreTarget);
+            el.listaSeguidores = el.listaSeguidores.filter(u => u !== nombreSeguidor);
         } else {
-            // Remover seguidor de la lista del target
-            query = { $pull: { listaSeguidores: seguidor } };
-            // Remover target de la lista de "siguiendo" del seguidor
-            queryContrario = { $pull: { siguiendo: target } };
+            // SEGUIR
+            yo.siguiendo.push(nombreTarget);
+            el.listaSeguidores.push(nombreSeguidor);
         }
 
-        // Actualizar usuario objetivo (el que recibe el seguidor)
-        const user = await Usuario.findOneAndUpdate(
-            { usuario: target },
-            query,
-            { new: true }
-        );
+        // 4. Guardar cambios
+        await yo.save();
+        await el.save();
 
-        if (!user) {
-            return res.status(404).json({ 
-                success: false,
-                mensaje: "Usuario no encontrado" 
-            });
+        // 5. Actualizar verificación si tienes esa función
+        if (typeof el.actualizarVerificacionAuto === 'function') {
+            await el.actualizarVerificacionAuto();
         }
-
-        // Actualizar usuario que hace el seguimiento
-        await Usuario.findOneAndUpdate(
-            { usuario: seguidor },
-            queryContrario
-        );
-
-        // Actualizar verificación automática
-        await user.actualizarVerificacionAuto();
-
-        console.log(`${accion === 'incrementar' ? '➕' : '➖'} @${seguidor} ${accion === 'incrementar' ? 'sigue' : 'dejó de seguir'} a @${target}`);
 
         res.json({ 
-            success: true,
-            seguidores: user.listaSeguidores?.length || 0,
-            listaSeguidores: user.listaSeguidores || [],
-            verificadoNivel: user.verificadoNivel
+            success: true, 
+            estado: isFollowing ? 'unfollowed' : 'followed',
+            seguidores: el.listaSeguidores.length
         });
-    } catch (error) { 
-        console.error('[ERROR /auth/follow]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            error: "Error en operación de seguimiento" 
-        }); 
+
+    } catch (error) {
+        console.error("Error en Follow:", error);
+        res.status(500).json({ success: false, error: "Error de autenticación o servidor" });
     }
 });
+
 
 // Actualizar avatar
 app.put("/auth/update-avatar", [
