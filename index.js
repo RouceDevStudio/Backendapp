@@ -1062,6 +1062,64 @@ app.put("/auth/update-bio", [
     }
 });
 
+// ✅ NUEVA RUTA: Actualizar perfil (avatar y bio juntos) - MÁS EFICIENTE
+app.put("/auth/update-profile", [
+    body('usuario').notEmpty().trim(),
+    body('avatar').optional(),
+    body('bio').optional().isLength({ max: 200 })
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Datos inválidos" 
+            });
+        }
+
+        const { usuario, avatar, bio } = req.body;
+        
+        // Construir objeto de actualización solo con campos proporcionados
+        const updateData = {};
+        if (avatar !== undefined && avatar !== null) updateData.avatar = avatar;
+        if (bio !== undefined && bio !== null) updateData.bio = bio;
+        
+        if (Object.keys(updateData).length === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Debes proporcionar al menos avatar o bio" 
+            });
+        }
+        
+        const usuarioActualizado = await Usuario.findOneAndUpdate(
+            { usuario: usuario.toLowerCase() }, 
+            { $set: updateData },
+            { new: true, lean: true }
+        );
+        
+        if (!usuarioActualizado) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Usuario no encontrado" 
+            });
+        }
+        
+        console.log(`✅ Perfil actualizado: @${usuario} - Avatar: ${avatar ? 'Sí' : 'No'}, Bio: ${bio ? 'Sí' : 'No'}`);
+        
+        res.json({ 
+            success: true,
+            avatar: usuarioActualizado.avatar,
+            bio: usuarioActualizado.bio
+        });
+    } catch (error) { 
+        console.error('[ERROR /auth/update-profile]:', error);
+        res.status(500).json({ 
+            success: false,
+            error: "Error al actualizar perfil" 
+        }); 
+    }
+});
+
 // Actualizar verificación manual (admin)
 app.put("/auth/admin/verificacion/:usuario", [
     body('nivel').isInt({ min: 0, max: 3 })
