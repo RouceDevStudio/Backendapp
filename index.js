@@ -2517,6 +2517,124 @@ app.get("/search", async (req, res) => {
     }
 });
 
+// ========== AGREGAR ESTAS RUTAS DESPUÉS DE LA LÍNEA 2518 (después de /search) ==========
+
+// ✅ RUTA: Obtener perfil público de un usuario
+app.get("/usuarios/perfil/:usuario", [
+    param('usuario').trim().notEmpty().withMessage('Usuario requerido')
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                mensaje: "Usuario inválido" 
+            });
+        }
+
+        const usuario = await Usuario.findOne({ usuario: req.params.usuario })
+            .select('usuario avatar bio verificadoNivel reputacion createdAt listaSeguidores siguiendo')
+            .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                mensaje: "Usuario no encontrado" 
+            });
+        }
+
+        // Calcular estadísticas
+        const totalPublicaciones = await Juego.countDocuments({ 
+            usuario: req.params.usuario, 
+            status: 'aprobado' 
+        });
+
+        res.json({
+            success: true,
+            usuario: {
+                ...usuario,
+                seguidores: usuario.listaSeguidores?.length || 0,
+                siguiendo: usuario.siguiendo?.length || 0,
+                publicaciones: totalPublicaciones
+            }
+        });
+
+        logger.info(`Perfil público consultado: ${req.params.usuario}`);
+    } catch (error) {
+        logger.error('❌ Error obteniendo perfil público:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al obtener perfil" 
+        });
+    }
+});
+
+// ✅ RUTA: Verificar si un usuario sigue a otro
+app.get("/usuarios/verifica-seguimiento/:usuarioActual/:usuarioObjetivo", [
+    param('usuarioActual').trim().notEmpty(),
+    param('usuarioObjetivo').trim().notEmpty()
+], async (req, res) => {
+    try {
+        const { usuarioActual, usuarioObjetivo } = req.params;
+
+        const usuario = await Usuario.findOne({ usuario: usuarioActual })
+            .select('siguiendo')
+            .lean();
+
+        if (!usuario) {
+            return res.json({ 
+                success: false, 
+                estaSiguiendo: false 
+            });
+        }
+
+        const estaSiguiendo = usuario.siguiendo?.includes(usuarioObjetivo) || false;
+
+        res.json({
+            success: true,
+            estaSiguiendo
+        });
+    } catch (error) {
+        logger.error('❌ Error verificando seguimiento:', error);
+        res.status(500).json({ 
+            success: false, 
+            estaSiguiendo: false 
+        });
+    }
+});
+
+// ✅ RUTA: Obtener estadísticas de seguimiento de un usuario
+app.get("/usuarios/stats-seguimiento/:usuario", [
+    param('usuario').trim().notEmpty()
+], async (req, res) => {
+    try {
+        const usuario = await Usuario.findOne({ usuario: req.params.usuario })
+            .select('listaSeguidores siguiendo')
+            .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                mensaje: "Usuario no encontrado" 
+            });
+        }
+
+        res.json({
+            success: true,
+            stats: {
+                seguidores: usuario.listaSeguidores?.length || 0,
+                siguiendo: usuario.siguiendo?.length || 0
+            }
+        });
+    } catch (error) {
+        logger.error('❌ Error obteniendo stats:', error);
+        res.status(500).json({ 
+            success: false, 
+            stats: { seguidores: 0, siguiendo: 0 } 
+        });
+    }
+});
+
 
 // ========== HEALTH CHECK ==========
 app.get("/health", (req, res) => {
