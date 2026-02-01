@@ -48,14 +48,9 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('CORS no permitido'));
-        }
-    },
-    credentials: true
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json({ limit: '2mb' }));
@@ -1112,18 +1107,43 @@ app.get("/auth/:usuario/siguiendo", async (req, res) => {
     }
 });
 
-// ============================================================================
-// 🔥 COPIA ESTE CÓDIGO Y PÉGALO EN TU index.js 
-// DESPUÉS DE LA LÍNEA 1101 (después de las rutas de seguimiento existentes)
-// ============================================================================
+app.get("/usuarios/perfil-publico/:usuario", async (req, res) => {
+    try {
+        const usuario = req.params.usuario.toLowerCase().trim();
+        
+        const user = await Usuario.findOne({ usuario })
+            .select("usuario avatar bio verificadoNivel")
+            .lean();
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "Usuario no encontrado"
+            });
+        }
+        
+        const [seguidores, siguiendo] = await Promise.all([
+            Seguimiento.countDocuments({ siguiendo: usuario }),
+            Seguimiento.countDocuments({ seguidor: usuario })
+        ]);
+        
+        res.json({
+            success: true,
+            usuario: {
+                ...user,
+                seguidores,
+                siguiendo
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: "Error del servidor"
+        });
+    }
+});
 
-// ========== RUTAS ALIAS PARA COMPATIBILIDAD CON FRONTEND ==========
-// Estas rutas son "alias" de las rutas existentes pero con las URLs que espera el frontend
-
-
-// ============================================================================
-// 🔥 RUTAS DE SEGUIMIENTO CORREGIDAS Y OPTIMIZADAS
-// ============================================================================
 
 // 1. Seguir a un usuario
 app.post("/usuarios/seguir", async (req, res) => {
