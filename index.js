@@ -2635,6 +2635,172 @@ app.get("/usuarios/stats-seguimiento/:usuario", [
     }
 });
 
+// ========== AGREGAR ESTAS RUTAS EN TU index.js ==========
+// ========== COLOCAR ANTES DE "// ========== HEALTH CHECK ==========" ==========
+
+// ✅ RUTA PÚBLICA: Obtener perfil público de un usuario (NO REQUIERE AUTENTICACIÓN)
+app.get("/usuarios/perfil-publico/:usuario", [
+    param('usuario').trim().notEmpty().withMessage('Usuario requerido')
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                mensaje: "Usuario inválido" 
+            });
+        }
+
+        // Búsqueda case-insensitive
+        const usuario = await Usuario.findOne({ 
+            usuario: { $regex: new RegExp(`^${req.params.usuario}$`, 'i') }
+        })
+        .select('usuario avatar bio verificadoNivel reputacion createdAt listaSeguidores siguiendo')
+        .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                mensaje: "Usuario no encontrado" 
+            });
+        }
+
+        // Calcular estadísticas
+        const totalPublicaciones = await Juego.countDocuments({ 
+            usuario: usuario.usuario, 
+            status: 'aprobado' 
+        });
+
+        res.json({
+            success: true,
+            usuario: {
+                usuario: usuario.usuario,
+                avatar: usuario.avatar,
+                bio: usuario.bio,
+                verificadoNivel: usuario.verificadoNivel,
+                reputacion: usuario.reputacion,
+                createdAt: usuario.createdAt,
+                seguidores: usuario.listaSeguidores?.length || 0,
+                siguiendo: usuario.siguiendo?.length || 0,
+                publicaciones: totalPublicaciones
+            }
+        });
+
+        logger.info(`Perfil público consultado: ${usuario.usuario}`);
+    } catch (error) {
+        logger.error('❌ Error obteniendo perfil público:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al obtener perfil" 
+        });
+    }
+});
+
+// ✅ RUTA PÚBLICA: Verificar si un usuario sigue a otro (NO REQUIERE AUTENTICACIÓN)
+app.get("/usuarios/verifica-seguimiento/:usuarioActual/:usuarioObjetivo", [
+    param('usuarioActual').trim().notEmpty(),
+    param('usuarioObjetivo').trim().notEmpty()
+], async (req, res) => {
+    try {
+        const { usuarioActual, usuarioObjetivo } = req.params;
+
+        const usuario = await Usuario.findOne({ 
+            usuario: { $regex: new RegExp(`^${usuarioActual}$`, 'i') }
+        })
+        .select('siguiendo')
+        .lean();
+
+        if (!usuario) {
+            return res.json({ 
+                success: true, 
+                estaSiguiendo: false 
+            });
+        }
+
+        // Comparación case-insensitive
+        const estaSiguiendo = usuario.siguiendo?.some(
+            u => u.toLowerCase() === usuarioObjetivo.toLowerCase()
+        ) || false;
+
+        res.json({
+            success: true,
+            estaSiguiendo
+        });
+    } catch (error) {
+        logger.error('❌ Error verificando seguimiento:', error);
+        res.status(500).json({ 
+            success: false, 
+            estaSiguiendo: false 
+        });
+    }
+});
+
+// ✅ RUTA PÚBLICA: Obtener estadísticas de seguimiento (NO REQUIERE AUTENTICACIÓN)
+app.get("/usuarios/stats-seguimiento/:usuario", [
+    param('usuario').trim().notEmpty()
+], async (req, res) => {
+    try {
+        const usuario = await Usuario.findOne({ 
+            usuario: { $regex: new RegExp(`^${req.params.usuario}$`, 'i') }
+        })
+        .select('listaSeguidores siguiendo')
+        .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                mensaje: "Usuario no encontrado" 
+            });
+        }
+
+        res.json({
+            success: true,
+            stats: {
+                seguidores: usuario.listaSeguidores?.length || 0,
+                siguiendo: usuario.siguiendo?.length || 0
+            }
+        });
+    } catch (error) {
+        logger.error('❌ Error obteniendo stats:', error);
+        res.status(500).json({ 
+            success: false, 
+            stats: { seguidores: 0, siguiendo: 0 } 
+        });
+    }
+});
+
+// ✅ RUTA PÚBLICA: Buscar usuarios (NO REQUIERE AUTENTICACIÓN)
+app.get("/usuarios/buscar", async (req, res) => {
+    try {
+        const { q, limit = 20 } = req.query;
+
+        if (!q || q.trim().length < 2) {
+            return res.status(400).json({ 
+                success: false, 
+                mensaje: "Búsqueda muy corta (mínimo 2 caracteres)" 
+            });
+        }
+
+        const usuarios = await Usuario.find({ 
+            usuario: { $regex: q.trim(), $options: 'i' }
+        })
+        .select('usuario avatar verificadoNivel')
+        .limit(parseInt(limit))
+        .lean();
+
+        res.json({
+            success: true,
+            usuarios
+        });
+    } catch (error) {
+        logger.error('❌ Error en búsqueda de usuarios:', error);
+        res.status(500).json({ 
+            success: false,
+            usuarios: []
+        });
+    }
+});
+
 
 // ========== HEALTH CHECK ==========
 app.get("/health", (req, res) => {
