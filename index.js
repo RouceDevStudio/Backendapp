@@ -205,7 +205,53 @@ const UsuarioSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Método para actualizar verificación automática
+// ========== RUTAS DE PERFIL CORREGIDAS ==========
+
+// 1. Obtener Perfil (Asegúrate de que esto esté ANTES del middleware de error 404)
+app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
+    try {
+        const username = req.params.usuario.toLowerCase().trim();
+        // Buscamos al usuario
+        const user = await Usuario.findOne({ usuario: username }).select('-password').lean();
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        }
+
+        // Buscamos sus juegos aprobados
+        const publicaciones = await Juego.countDocuments({ 
+            usuario: user.usuario, 
+            status: 'aprobado' 
+        });
+
+        res.json({
+            success: true,
+            usuario: {
+                ...user,
+                publicaciones: publicaciones,
+                seguidores: user.listaSeguidores ? user.listaSeguidores.length : 0,
+                siguiendo: user.siguiendo ? user.siguiendo.length : 0
+            }
+        });
+    } catch (err) {
+        console.error("Error en perfil:", err);
+        res.status(500).json({ success: false, error: "Error interno del servidor" });
+    }
+});
+
+// 2. Verificar seguimiento
+app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
+    try {
+        const userActual = await Usuario.findOne({ usuario: req.params.actual.toLowerCase().trim() });
+        const estaSiguiendo = userActual?.siguiendo?.includes(req.params.viendo.toLowerCase().trim());
+        res.json({ estaSiguiendo: !!estaSiguiendo });
+    } catch (error) {
+        res.json({ estaSiguiendo: false });
+    }
+});
+
+
+// Mét para actualizar verificación automática
 UsuarioSchema.methods.actualizarVerificacionAuto = async function() {
     const seguidores = this.listaSeguidores?.length || 0;
     let nuevoNivel = 0;
@@ -624,50 +670,6 @@ app.post("/auth/login", [
             });
         }
         
-        // AGREGAR ESTO A index.js
-app.get("/usuarios/perfil-publico/:usuario", async (req, res) => {
-    try {
-        const user = await Usuario.findOne({ 
-            usuario: req.params.usuario.toLowerCase() 
-        }).select('-password').lean();
-
-        if (!user) {
-            return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
-        }
-
-        // Contar publicaciones aprobadas del usuario
-        const conteoPublicaciones = await Juego.countDocuments({ 
-            usuario: user.usuario, 
-            status: 'aprobado' 
-        });
-
-        res.json({
-            success: true,
-            usuario: {
-                ...user,
-                publicaciones: conteoPublicaciones,
-                seguidores: user.listaSeguidores?.length || 0,
-                siguiendo: user.siguiendo?.length || 0
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// NUEVA RUTA: Obtener perfil público de un usuario
-
-
-// TAMBIÉN AGREGA ESTA RUTA PARA VERIFICAR EL BOTÓN
-app.get("/usuarios/verifica-seguimiento/:actual/:viendo", async (req, res) => {
-    try {
-        const user = await Usuario.findOne({ usuario: req.params.actual.toLowerCase() });
-        const estaSiguiendo = user?.siguiendo?.includes(req.params.viendo.toLowerCase());
-        res.json({ estaSiguiendo: !!estaSiguiendo });
-    } catch (error) {
-        res.json({ estaSiguiendo: false });
-    }
-});
 
 
         const { usuario, password } = req.body;
@@ -736,6 +738,7 @@ app.post("/auth/register", [
     body('usuario').notEmpty().trim().isLength({ min: 3, max: 20 }),
     body('password').notEmpty().isLength({ min: 6 })
 ], async (req, res) => {
+    
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
