@@ -252,6 +252,49 @@ app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
     }
 });
 
+// ✅ RUTA PARA GUARDAR/QUITAR DE LA BÓVEDA (Backend)
+app.post('/favoritos/toggle', async (req, res) => {
+    try {
+        const { usuario, juegoId } = req.body;
+        const user = await Usuario.findOne({ usuario: usuario.toLowerCase() });
+
+        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+
+        // Convertimos el juegoId a ObjectId para que MongoDB lo reconozca
+        const oid = new mongoose.Types.ObjectId(juegoId);
+        
+        const index = user.favoritos.indexOf(oid);
+        let mensaje = "";
+
+        if (index > -1) {
+            user.favoritos.splice(index, 1); // Lo quita si ya existe
+            mensaje = "Eliminado de la bóveda";
+        } else {
+            user.favoritos.push(oid); // Lo agrega si no existe
+            mensaje = "Agregado a la bóveda";
+        }
+
+        await user.save();
+        res.json({ success: true, mensaje, total: user.favoritos.length });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ✅ RUTA PARA CARGAR LA BÓVEDA
+app.get('/favoritos/:usuario', async (req, res) => {
+    try {
+        const user = await Usuario.findOne({ usuario: req.params.usuario.toLowerCase() })
+            .populate('favoritos'); // Esto trae los datos del juego, no solo el ID
+
+        if (!user) return res.status(404).json({ success: false });
+
+        res.json({ success: true, favoritos: user.favoritos || [] });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 
 // Mét para actualizar verificación automática
 UsuarioSchema.methods.actualizarVerificacionAuto = async function() {
