@@ -623,6 +623,49 @@ app.post("/auth/login", [
                 mensaje: "Usuario y contraseña requeridos" 
             });
         }
+        
+        // AGREGAR ESTO A index.js
+app.get("/usuarios/perfil-publico/:usuario", async (req, res) => {
+    try {
+        const user = await Usuario.findOne({ 
+            usuario: req.params.usuario.toLowerCase() 
+        }).select('-password').lean();
+
+        if (!user) {
+            return res.status(404).json({ success: false, mensaje: "Usuario no encontrado" });
+        }
+
+        // Contar publicaciones aprobadas del usuario
+        const conteoPublicaciones = await Juego.countDocuments({ 
+            usuario: user.usuario, 
+            status: 'aprobado' 
+        });
+
+        res.json({
+            success: true,
+            usuario: {
+                ...user,
+                publicaciones: conteoPublicaciones,
+                seguidores: user.listaSeguidores?.length || 0,
+                siguiendo: user.siguiendo?.length || 0
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// TAMBIÉN AGREGA ESTA RUTA PARA VERIFICAR EL BOTÓN
+app.get("/usuarios/verifica-seguimiento/:actual/:viendo", async (req, res) => {
+    try {
+        const user = await Usuario.findOne({ usuario: req.params.actual.toLowerCase() });
+        const estaSiguiendo = user?.siguiendo?.includes(req.params.viendo.toLowerCase());
+        res.json({ estaSiguiendo: !!estaSiguiendo });
+    } catch (error) {
+        res.json({ estaSiguiendo: false });
+    }
+});
+
 
         const { usuario, password } = req.body;
         
