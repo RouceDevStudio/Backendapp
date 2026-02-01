@@ -655,6 +655,9 @@ app.get("/usuarios/perfil-publico/:usuario", async (req, res) => {
     }
 });
 
+// NUEVA RUTA: Obtener perfil público de un usuario
+
+
 // TAMBIÉN AGREGA ESTA RUTA PARA VERIFICAR EL BOTÓN
 app.get("/usuarios/verifica-seguimiento/:actual/:viendo", async (req, res) => {
     try {
