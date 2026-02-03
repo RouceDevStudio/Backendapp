@@ -224,30 +224,6 @@ const UsuarioSchema = new mongoose.Schema({
 
 const Usuario = mongoose.model('Usuario', UsuarioSchema);
 
-// ========== MIDDLEWARE DE AUTENTICACIÓN JWT ==========
-const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-    if (!token) {
-        return res.status(401).json({ 
-            success: false, 
-            error: "Token no proporcionado" 
-        });
-    }
-
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(403).json({ 
-                success: false, 
-                error: "Token inválido o expirado" 
-            });
-        }
-        req.user = user; // Guardamos el usuario decodificado
-        next();
-    });
-};
-
 // SCHEMA: Comentarios
 const CommentSchema = new mongoose.Schema({
     usuario: String,
@@ -819,85 +795,6 @@ app.put('/usuarios/update-bio', [
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ success: false, error: "Error al actualizar bio" });
-    }
-});
-
-// ========== RUTA DE SEGUIMIENTO CON AUTENTICACIÓN ==========
-app.put('/auth/follow/:usuario', authenticateToken, async (req, res) => {
-    try {
-        const usuarioActual = req.user.usuario.toLowerCase(); // Del token JWT
-        const usuarioObjetivo = req.params.usuario.toLowerCase();
-        
-        // Validar que no se siga a sí mismo
-        if (usuarioActual === usuarioObjetivo) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "No puedes seguirte a ti mismo" 
-            });
-        }
-
-        // Buscar ambos usuarios
-        const userActual = await Usuario.findOne({ usuario: usuarioActual });
-        const userObjetivo = await Usuario.findOne({ usuario: usuarioObjetivo });
-        
-        if (!userActual) {
-            return res.status(404).json({ 
-                success: false, 
-                error: "Usuario autenticado no encontrado" 
-            });
-        }
-
-        if (!userObjetivo) {
-            return res.status(404).json({ 
-                success: false, 
-                error: "Usuario a seguir no encontrado" 
-            });
-        }
-
-        // Verificar si ya sigue al usuario
-        const yaSigue = userActual.siguiendo && userActual.siguiendo.includes(usuarioObjetivo);
-        
-        if (yaSigue) {
-            // DEJAR DE SEGUIR
-            await Usuario.updateOne(
-                { usuario: usuarioActual },
-                { $pull: { siguiendo: usuarioObjetivo } }
-            );
-            await Usuario.updateOne(
-                { usuario: usuarioObjetivo },
-                { $pull: { listaSeguidores: usuarioActual } }
-            );
-            
-            console.log(`💔 ${usuarioActual} dejó de seguir a ${usuarioObjetivo}`);
-            return res.json({ 
-                success: true, 
-                siguiendo: false,
-                message: `Dejaste de seguir a @${usuarioObjetivo}`
-            });
-        } else {
-            // SEGUIR
-            await Usuario.updateOne(
-                { usuario: usuarioActual },
-                { $addToSet: { siguiendo: usuarioObjetivo } }
-            );
-            await Usuario.updateOne(
-                { usuario: usuarioObjetivo },
-                { $addToSet: { listaSeguidores: usuarioActual } }
-            );
-            
-            console.log(`✅ ${usuarioActual} ahora sigue a ${usuarioObjetivo}`);
-            return res.json({ 
-                success: true, 
-                siguiendo: true,
-                message: `Ahora sigues a @${usuarioObjetivo}`
-            });
-        }
-    } catch (err) {
-        console.error("❌ Error en /auth/follow:", err);
-        res.status(500).json({ 
-            success: false, 
-            error: "Error al procesar seguimiento" 
-        });
     }
 });
 
