@@ -27,11 +27,10 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: (origin, callback) => {
-        // Permitir requests sin origin (como Postman) o de orígenes permitidos
         if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed))) {
             callback(null, true);
         } else {
-            callback(null, true); // Más permisivo para evitar bloqueos
+            callback(null, true);
         }
     },
     credentials: true
@@ -103,7 +102,7 @@ mongoose.connection.on('disconnected', () => {
 
 // ========== SCHEMAS ==========
 
-// SCHEMA: Juegos
+// SCHEMA: Juegos (MEJORADO CON LINK STATUS)
 const JuegoSchema = new mongoose.Schema({
     usuario: { 
         type: String, 
@@ -133,9 +132,16 @@ const JuegoSchema = new mongoose.Schema({
     },
     status: { 
         type: String, 
-        enum: ["pendiente", "aprobado", "rechazado"],
+        enum: ["pendiente", "aprobado", "rechazado", "pending"],
         default: "pendiente",
         index: true 
+    },
+    // ⭐ NUEVO: Estado del link basado en reportes
+    linkStatus: {
+        type: String,
+        enum: ["online", "revision", "caido"],
+        default: "online",
+        index: true
     },
     reportes: { 
         type: Number, 
@@ -154,6 +160,17 @@ const JuegoSchema = new mongoose.Schema({
 
 JuegoSchema.index({ usuario: 1, status: 1 });
 JuegoSchema.index({ createdAt: -1 });
+JuegoSchema.index({ linkStatus: 1 });
+
+// ⭐ Middleware para actualizar linkStatus automáticamente basado en reportes
+JuegoSchema.pre('save', function(next) {
+    if (this.reportes >= 3) {
+        this.linkStatus = 'revision';
+    } else {
+        this.linkStatus = 'online';
+    }
+    next();
+});
 
 const Juego = mongoose.model('Juego', JuegoSchema);
 
@@ -205,152 +222,207 @@ const UsuarioSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// ==========================================
-// ✅ RUTAS DE PERFIL (PONER ARRIBA DEL 404)
-// ==========================================
-
-app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
-    try {
-        const username = req.params.usuario.toLowerCase().trim();
-        // Usamos una búsqueda insensible a mayúsculas para evitar errores
-        const user = await Usuario.findOne({ usuario: username }).select('-password').lean();
-
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        // Buscamos los juegos aprobados del usuario
-        const publicaciones = await Juego.countDocuments({ 
-            usuario: user.usuario, 
-            status: 'aprobado' 
-        });
-
-        res.json({
-            success: true,
-            usuario: {
-                ...user,
-                publicaciones,
-                // Corregimos para que use los arrays de tu Schema
-                seguidores: user.listaSeguidores ? user.listaSeguidores.length : 0,
-                siguiendo: user.siguiendo ? user.siguiendo.length : 0
-            }
-        });
-    } catch (err) {
-        res.status(500).json({ success: false, error: "Error al cargar perfil" });
-    }
-});
-
-app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
-    try {
-        const actual = req.params.actual.toLowerCase().trim();
-        const viendo = req.params.viendo.toLowerCase().trim();
-        const user = await Usuario.findOne({ usuario: actual });
-        const loSigo = user?.siguiendo?.includes(viendo);
-        res.json({ estaSiguiendo: !!loSigo });
-    } catch (err) {
-        res.json({ estaSiguiendo: false });
-    }
-});
-
-
-// Mét para actualizar verificación automática
-UsuarioSchema.methods.actualizarVerificacionAuto = async function() {
-    const seguidores = this.listaSeguidores?.length || 0;
-    let nuevoNivel = 0;
-    
-    if (seguidores >= 1000) nuevoNivel = 3;
-    else if (seguidores >= 100) nuevoNivel = 2;
-    else if (seguidores >= 50) nuevoNivel = 1;
-
-    if (nuevoNivel > this.verificadoNivel) {
-        this.verificadoNivel = nuevoNivel;
-        await this.save();
-        console.log(`✨ @${this.usuario} verificado nivel ${nuevoNivel} (${seguidores} seguidores)`);
-    }
-};
-
-// Índices
-UsuarioSchema.index({ verificadoNivel: 1 });
-
-const Usuario = mongoose.model("Usuario", UsuarioSchema);
+const Usuario = mongoose.model('Usuario', UsuarioSchema);
 
 // SCHEMA: Comentarios
-const ComentarioSchema = new mongoose.Schema({
+const CommentSchema = new mongoose.Schema({
     usuario: String,
     texto: String,
-    itemId: { type: String, index: true },
+    itemId: String,
     fecha: { type: Date, default: Date.now }
 });
 
-const Comentario = mongoose.model('Comentario', ComentarioSchema);
+const Comentario = mongoose.model('Comentario', CommentSchema);
 
 // SCHEMA: Favoritos
-const FavoritoSchema = new mongoose.Schema({
-    usuario: { type: String, index: true },
-    itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego', index: true }
-}, {
-    timestamps: true
+const FavoritosSchema = new mongoose.Schema({
+    usuario: String,
+    itemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Juego' }
 });
 
-FavoritoSchema.index({ usuario: 1, itemId: 1 }, { unique: true });
+const Favorito = mongoose.model('Favoritos', FavoritosSchema);
 
-const Favorito = mongoose.model('Favorito', FavoritoSchema);
+// ==========================================
+// ⭐ NUEVAS RUTAS ADMIN - EDICIÓN COMPLETA
+// ==========================================
 
-// ========== MIDDLEWARE DE AUTENTICACIÓN (OPCIONAL) ==========
-const verificarTokenOpcional = (req, res, next) => {
-    const token = req.headers['authorization']?.split(' ')[1];
-    
-    if (!token) {
-        req.usuario = null;
-        return next();
-    }
-
+// ⭐ NUEVA: Actualizar cualquier campo de un item (ADMIN)
+app.put("/admin/items/:id", [
+    param('id').isMongoId(),
+    body('title').optional().trim().isLength({ max: 200 }),
+    body('description').optional().trim().isLength({ max: 1000 }),
+    body('link').optional().trim(),
+    body('image').optional().trim(),
+    body('category').optional().trim(),
+    body('status').optional().isIn(['pendiente', 'aprobado', 'rechazado', 'pending']),
+    body('linkStatus').optional().isIn(['online', 'revision', 'caido']),
+    body('reportes').optional().isInt({ min: 0 })
+], async (req, res) => {
     try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.usuario = decoded.usuario;
-        req.esAdmin = decoded.esAdmin || false;
-    } catch (error) {
-        req.usuario = null;
-    }
-    
-    next();
-};
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Datos inválidos",
+                details: errors.array()
+            });
+        }
 
-// Middleware que REQUIERE autenticación
-const verificarToken = (req, res, next) => {
-    const token = req.headers['authorization']?.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ 
-            success: false, 
-            error: "Token no proporcionado" 
+        const updates = {};
+        const allowedFields = ['title', 'description', 'link', 'image', 'category', 'status', 'linkStatus', 'reportes'];
+        
+        allowedFields.forEach(field => {
+            if (req.body[field] !== undefined) {
+                updates[field] = req.body[field];
+            }
         });
-    }
 
+        const item = await Juego.findByIdAndUpdate(
+            req.params.id,
+            { $set: updates },
+            { new: true, runValidators: true }
+        );
+
+        if (!item) {
+            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        }
+
+        console.log(`✅ ADMIN: Item ${item._id} actualizado`);
+        res.json({ success: true, item });
+    } catch (error) {
+        console.error('[ERROR /admin/items/:id]:', error.message);
+        res.status(500).json({ success: false, error: "Error al actualizar item" });
+    }
+});
+
+// ⭐ NUEVA: Obtener todos los items con información completa para admin
+app.get("/admin/items", async (req, res) => {
     try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        req.usuario = decoded.usuario;
-        req.esAdmin = decoded.esAdmin || false;
-        next();
+        const items = await Juego.find()
+            .sort({ createdAt: -1 })
+            .lean();
+        
+        // Añadir información adicional útil para el admin
+        const itemsWithInfo = items.map(item => ({
+            ...item,
+            diasDesdeCreacion: Math.floor((Date.now() - new Date(item.createdAt).getTime()) / (1000 * 60 * 60 * 24)),
+            necesitaRevision: item.reportes >= 3 || item.linkStatus === 'revision'
+        }));
+
+        res.json({
+            success: true,
+            count: items.length,
+            items: itemsWithInfo
+        });
     } catch (error) {
-        return res.status(401).json({ 
-            success: false, 
-            error: "Token inválido" 
-        });
+        console.error('[ERROR /admin/items]:', error.message);
+        res.status(500).json({ success: false, error: "Error al obtener items" });
     }
-};
+});
 
-const verificarAdmin = (req, res, next) => {
-    if (!req.esAdmin) {
-        return res.status(403).json({ 
-            success: false, 
-            error: "Acceso denegado - Solo administradores" 
-        });
+// ⭐ NUEVA: Resetear reportes de un item
+app.put("/admin/items/:id/reset-reports", [
+    param('id').isMongoId()
+], async (req, res) => {
+    try {
+        const item = await Juego.findByIdAndUpdate(
+            req.params.id,
+            { 
+                $set: { 
+                    reportes: 0,
+                    linkStatus: 'online'
+                }
+            },
+            { new: true }
+        );
+
+        if (!item) {
+            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        }
+
+        console.log(`✅ ADMIN: Reportes reseteados para ${item.title}`);
+        res.json({ success: true, item });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al resetear reportes" });
     }
-    next();
-};
+});
 
-// ========== RUTAS DE JUEGOS/ITEMS ==========
+// ⭐ NUEVA: Actualizar solo el linkStatus
+app.put("/admin/items/:id/link-status", [
+    param('id').isMongoId(),
+    body('linkStatus').isIn(['online', 'revision', 'caido'])
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ success: false, error: "Estado inválido" });
+        }
+
+        const item = await Juego.findByIdAndUpdate(
+            req.params.id,
+            { $set: { linkStatus: req.body.linkStatus } },
+            { new: true }
+        );
+
+        if (!item) {
+            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        }
+
+        console.log(`✅ ADMIN: Link status cambiado a ${req.body.linkStatus} para ${item.title}`);
+        res.json({ success: true, item });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al actualizar estado del link" });
+    }
+});
+
+// ⭐ MEJORADA: Ruta de reportar que actualiza linkStatus automáticamente
+app.put("/items/report/:id", [
+    param('id').isMongoId()
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "ID inválido" 
+            });
+        }
+
+        const juego = await Juego.findByIdAndUpdate(
+            req.params.id, 
+            { $inc: { reportes: 1 } }, 
+            { new: true }
+        );
+
+        if (!juego) {
+            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        }
+
+        // Actualizar linkStatus si llega a 3 reportes
+        if (juego.reportes >= 3 && juego.linkStatus !== 'revision') {
+            juego.linkStatus = 'revision';
+            await juego.save();
+        }
+        
+        console.log(`⚠️ Reporte #${juego.reportes} para: ${juego.title}`);
+        
+        res.json({ 
+            success: true,
+            ok: true, 
+            reportes: juego.reportes,
+            linkStatus: juego.linkStatus
+        });
+    } catch (error) { 
+        res.status(500).json({ 
+            success: false,
+            error: "Error al reportar" 
+        }); 
+    }
+});
+
+// ==========================================
+// RUTAS ORIGINALES (MANTENER)
+// ==========================================
 
 // Obtener todos los items
 app.get("/items", async (req, res) => {
@@ -392,7 +464,8 @@ app.post("/items/add", [
 
         const nuevoJuego = new Juego({ 
             ...req.body, 
-            status: "pendiente" 
+            status: "pendiente",
+            linkStatus: "online"
         });
         
         await nuevoJuego.save();
@@ -463,276 +536,58 @@ app.delete("/items/:id", [
     }
 });
 
-// Reportar item
-app.put("/items/report/:id", [
-    param('id').isMongoId()
+// ========== RUTAS DE AUTENTICACIÓN ==========
+app.post('/auth/register', [
+    body('usuario').isLength({ min: 3, max: 20 }).trim().toLowerCase(),
+    body('password').isLength({ min: 6 })
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
                 success: false, 
-                error: "ID inválido" 
+                error: "Usuario: 3-20 caracteres, Contraseña: min 6" 
             });
         }
 
-        const juego = await Juego.findByIdAndUpdate(
-            req.params.id, 
-            { $inc: { reportes: 1 } }, 
-            { new: true, lean: true }
-        );
+        const { usuario, password } = req.body;
         
-        res.json({ 
-            success: true,
-            ok: true, 
-            reportes: juego?.reportes || 0 
-        });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al reportar" 
-        }); 
-    }
-});
-
-// ========== RUTAS DE COMENTARIOS ==========
-
-// Obtener todos los comentarios
-app.get("/comentarios", async (req, res) => {
-    try {
-        const comentarios = await Comentario.find()
-            .sort({ fecha: -1 })
-            .lean();
-        res.json(comentarios);
-    } catch (error) { 
-        res.status(500).json([]); 
-    }
-});
-
-// Obtener comentarios de un item específico
-app.get("/comentarios/:id", async (req, res) => {
-    try {
-        const comentarios = await Comentario.find({ 
-            itemId: req.params.id 
-        }).sort({ fecha: -1 }).lean();
-        res.json(comentarios);
-    } catch (error) { 
-        res.status(500).json([]); 
-    }
-});
-
-// Agregar comentario
-app.post("/comentarios", [
-    body('usuario').notEmpty().trim(),
-    body('texto').notEmpty().trim().isLength({ max: 500 }),
-    body('itemId').notEmpty()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
+        const existe = await Usuario.findOne({ usuario });
+        if (existe) {
             return res.status(400).json({ 
                 success: false, 
-                error: "Datos inválidos" 
+                error: "Usuario ya existe" 
             });
         }
 
-        const nuevo = new Comentario(req.body);
-        await nuevo.save();
+        const hash = await bcrypt.hash(password, 10);
+        const nuevoUser = new Usuario({ 
+            usuario, 
+            password: hash 
+        });
+        
+        await nuevoUser.save();
+
+        const token = jwt.sign({ usuario }, JWT_SECRET, { expiresIn: '30d' });
+
+        console.log(`✅ Nuevo usuario registrado: @${usuario}`);
         
         res.status(201).json({ 
             success: true,
             ok: true,
-            comentario: nuevo
+            usuario,
+            token
         });
-    } catch (error) { 
+    } catch (error) {
+        console.error('[ERROR /auth/register]:', error.message);
         res.status(500).json({ 
             success: false,
-            error: "Error al guardar comentario" 
-        }); 
-    }
-});
-
-// Eliminar comentario
-app.delete("/comentarios/:id", [
-    param('id').isMongoId()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "ID inválido" 
-            });
-        }
-
-        await Comentario.findByIdAndDelete(req.params.id);
-        res.json({ success: true, ok: true });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al eliminar" 
-        }); 
-    }
-});
-
-// ========== RUTAS DE FAVORITOS ==========
-
-// ✅ Agregar a favoritos - MEJORADO
-app.post("/favoritos/add", [
-    body('usuario').notEmpty().trim(),
-    body('itemId').isMongoId()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                mensaje: "Datos inválidos" 
-            });
-        }
-
-        const { usuario, itemId } = req.body;
-        
-        // ✅ Verificar si el item existe
-        const itemExiste = await Juego.findById(itemId);
-        if (!itemExiste) {
-            return res.status(404).json({ 
-                success: false,
-                mensaje: "El item no existe" 
-            });
-        }
-        
-        // ✅ Verificar si ya está en favoritos
-        const existe = await Favorito.findOne({ 
-            usuario: usuario.toLowerCase().trim(), 
-            itemId 
-        }).lean();
-        
-        if (existe) {
-            return res.status(400).json({ 
-                success: false,
-                mensaje: "Ya existe en favoritos" 
-            });
-        }
-        
-        // Crear favorito
-        await new Favorito({ 
-            usuario: usuario.toLowerCase().trim(), 
-            itemId 
-        }).save();
-        
-        console.log(`💾 @${usuario} agregó ${itemExiste.title} a favoritos`);
-        
-        res.json({ 
-            success: true,
-            ok: true,
-            mensaje: "Agregado a favoritos"
+            error: "Error en registro" 
         });
-    } catch (error) { 
-        console.error('[ERROR /favoritos/add]:', error);
-        if (error.code === 11000) {
-            return res.status(400).json({ 
-                success: false,
-                mensaje: "Ya está en favoritos" 
-            });
-        }
-        res.status(500).json({ 
-            success: false,
-            error: "Error al agregar favorito" 
-        }); 
     }
 });
 
-// ✅ Obtener favoritos de un usuario - MEJORADO CON DATOS COMPLETOS
-app.get("/favoritos/:usuario", async (req, res) => {
-    try {
-        const usuario = req.params.usuario.toLowerCase().trim();
-        
-        console.log(`📂 Cargando favoritos de: @${usuario}`);
-        
-        // Buscar favoritos y hacer populate completo
-        const favoritos = await Favorito.find({ usuario })
-            .populate({
-                path: 'itemId',
-                select: '_id title description image link category usuario status reportes'
-            })
-            .lean()
-            .exec();
-        
-        console.log(`✅ Encontrados ${favoritos.length} favoritos para @${usuario}`);
-        
-        // ✅ FILTRAR items que no existen (fueron eliminados) y mapear correctamente
-        const favoritosValidos = favoritos
-            .filter(fav => fav.itemId !== null) // Eliminar referencias rotas
-            .map(fav => ({
-                _id: fav.itemId._id, // ID del juego
-                title: fav.itemId.title,
-                description: fav.itemId.description,
-                image: fav.itemId.image,
-                link: fav.itemId.link,
-                category: fav.itemId.category,
-                usuario: fav.itemId.usuario,
-                status: fav.itemId.status,
-                reportes: fav.itemId.reportes,
-                favoritoId: fav._id // ✅ ID del favorito para poder eliminarlo
-            }));
-        
-        console.log(`📊 Favoritos válidos: ${favoritosValidos.length}`);
-        
-        res.json(favoritosValidos);
-        
-    } catch (error) { 
-        console.error('[ERROR /favoritos/:usuario]:', error);
-        res.status(500).json({ 
-            success: false,
-            error: "Error al cargar favoritos",
-            mensaje: error.message
-        }); 
-    }
-});
-
-// ✅ Eliminar de favoritos - MEJORADO
-app.delete("/favoritos/delete/:id", [
-    param('id').isMongoId()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "ID inválido" 
-            });
-        }
-
-        const favoritoEliminado = await Favorito.findByIdAndDelete(req.params.id);
-        
-        if (!favoritoEliminado) {
-            return res.status(404).json({ 
-                success: false, 
-                mensaje: "Favorito no encontrado" 
-            });
-        }
-        
-        console.log(`🗑️ Favorito eliminado: ${req.params.id}`);
-        
-        res.json({ 
-            success: true, 
-            ok: true,
-            mensaje: "Eliminado de favoritos"
-        });
-    } catch (error) { 
-        console.error('[ERROR /favoritos/delete]:', error);
-        res.status(500).json({ 
-            success: false,
-            error: "Error al eliminar" 
-        }); 
-    }
-});
-
-// ========== RUTAS DE AUTENTICACIÓN ==========
-
-// Login
-app.post("/auth/login", [
+app.post('/auth/login', [
     body('usuario').notEmpty().trim(),
     body('password').notEmpty()
 ], async (req, res) => {
@@ -741,575 +596,344 @@ app.post("/auth/login", [
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
                 success: false, 
-                mensaje: "Usuario y contraseña requeridos" 
+                error: "Credenciales inválidas" 
             });
         }
-        
-
 
         const { usuario, password } = req.body;
-        
-        // Buscar usuario
-        const user = await Usuario.findOne({ 
-            usuario: usuario.toLowerCase() 
-        });
-        
+        const user = await Usuario.findOne({ usuario: usuario.toLowerCase() });
+
         if (!user) {
-            console.warn(`❌ Login fallido: usuario no existe - @${usuario}`);
             return res.status(401).json({ 
-                success: false, 
-                mensaje: "Credenciales incorrectas" 
+                success: false,
+                error: "Usuario no existe" 
             });
         }
 
-        // Verificar contraseña
-        // Si la contraseña está hasheada, usar bcrypt
-        let passwordValida = false;
-        if (user.password.startsWith('$2')) {
-            passwordValida = await bcrypt.compare(password, user.password);
-        } else {
-            // Compatibilidad con contraseñas sin hash (migración)
-            passwordValida = password === user.password;
-        }
-
-        if (!passwordValida) {
-            console.warn(`❌ Login fallido: contraseña incorrecta - @${usuario}`);
+        const validPass = await bcrypt.compare(password, user.password);
+        if (!validPass) {
             return res.status(401).json({ 
-                success: false, 
-                mensaje: "Credenciales incorrectas" 
+                success: false,
+                error: "Contraseña incorrecta" 
             });
         }
 
-        // Generar token JWT
-        const token = jwt.sign(
-            { 
-                usuario: user.usuario,
-                esAdmin: user.usuario === 'roucedev' || user.usuario === 'admin'
-            },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
+        const token = jwt.sign({ usuario: user.usuario }, JWT_SECRET, { expiresIn: '30d' });
 
-        console.log(`✅ Login exitoso: @${usuario}`);
-
+        console.log(`✅ Login exitoso: @${user.usuario}`);
+        
         res.json({ 
             success: true,
+            ok: true,
             usuario: user.usuario,
-            verificadoNivel: user.verificadoNivel || 0,
-            avatar: user.avatar || '',
             token
         });
-    } catch (error) { 
+    } catch (error) {
         console.error('[ERROR /auth/login]:', error.message);
         res.status(500).json({ 
             success: false,
-            mensaje: "Error del servidor" 
-        }); 
-    }
-});
-
-// Registro
-app.post("/auth/register", [
-    body('usuario').notEmpty().trim().isLength({ min: 3, max: 20 }),
-    body('password').notEmpty().isLength({ min: 6 })
-], async (req, res) => {
-    
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                mensaje: "Usuario (3-20 chars) y contraseña (min 6) requeridos" 
-            });
-        }
-
-        const { usuario, password } = req.body;
-        
-        // Verificar si existe
-        const existe = await Usuario.findOne({ 
-            usuario: usuario.toLowerCase() 
-        }).select('_id').lean();
-        
-        if (existe) {
-            return res.status(400).json({ 
-                success: false, 
-                mensaje: "Usuario ya existe" 
-            });
-        }
-
-        // Hash de contraseña
-        const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Crear usuario
-        const nuevo = new Usuario({ 
-            usuario: usuario.toLowerCase(), 
-            password: hashedPassword,
-            listaSeguidores: [],
-            siguiendo: []
+            error: "Error en login" 
         });
-        
-        await nuevo.save();
-
-        // Generar token
-        const token = jwt.sign(
-            { 
-                usuario: nuevo.usuario,
-                esAdmin: false
-            },
-            JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-
-        console.log(`✅ Nuevo registro: @${usuario}`);
-
-        res.json({ 
-            success: true,
-            usuario: nuevo.usuario,
-            verificadoNivel: 0,
-            token
-        });
-    } catch (error) { 
-        console.error('[ERROR /auth/register]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            mensaje: "Error del servidor" 
-        }); 
     }
 });
 
 // Obtener todos los usuarios
-app.get("/auth/users", async (req, res) => {
+app.get('/auth/users', async (req, res) => {
     try {
-        const usuarios = await Usuario.find()
+        const users = await Usuario.find()
             .select('-password')
+            .sort({ fecha: -1 })
             .lean();
-        res.json(usuarios);
-    } catch (error) { 
-        res.status(500).json([]); 
+        res.json(users);
+    } catch (error) {
+        res.status(500).json([]);
     }
 });
 
-// Obtener un usuario específico
-app.get("/auth/users/:usuario", async (req, res) => {
+// Eliminar usuario
+app.delete('/auth/users/:id', async (req, res) => {
     try {
-        const usuario = await Usuario.findOne({ 
-            usuario: req.params.usuario.toLowerCase() 
-        })
-        .select('-password')
-        .lean();
-        
-        if (!usuario) {
-            return res.status(404).json({ 
-                success: false,
-                mensaje: "Usuario no encontrado" 
-            });
-        }
-        
-        res.json(usuario);
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al obtener usuario" 
-        }); 
-    }
-});
-
-// Eliminar usuario (solo admin)
-app.delete("/auth/users/:id", [
-    param('id').isMongoId()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "ID inválido" 
-            });
-        }
-
         await Usuario.findByIdAndDelete(req.params.id);
         res.json({ success: true, ok: true });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al eliminar" 
-        }); 
-    }
-});
-
-// Seguir/Dejar de seguir
-// ✅ VERSIÓN CORREGIDA Y SEGURA (REEMPLAZA LA TUYA)
-app.put('/auth/follow/:usuario', async (req, res) => {
-    try {
-        // 1. Validar Token
-        const authHeader = req.headers.authorization;
-        if (!authHeader) return res.status(401).json({ success: false, error: "No autorizado" });
-
-        const token = authHeader.split(' ')[1];
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
-        
-        const nombreSeguidor = decoded.usuario.toLowerCase().trim(); // El que hace click
-        const nombreTarget = req.params.usuario.toLowerCase().trim(); // El dueño del perfil
-
-        if (nombreSeguidor === nombreTarget) {
-            return res.status(400).json({ success: false, error: "No puedes seguirte a ti mismo" });
-        }
-
-        // 2. Buscar ambos usuarios
-        const yo = await Usuario.findOne({ usuario: nombreSeguidor });
-        const el = await Usuario.findOne({ usuario: nombreTarget });
-
-        if (!yo || !el) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        // 3. Lógica Toggle Automática
-        let isFollowing = yo.siguiendo.includes(nombreTarget);
-        
-        if (isFollowing) {
-            // DEJAR DE SEGUIR
-            yo.siguiendo = yo.siguiendo.filter(u => u !== nombreTarget);
-            el.listaSeguidores = el.listaSeguidores.filter(u => u !== nombreSeguidor);
-        } else {
-            // SEGUIR
-            yo.siguiendo.push(nombreTarget);
-            el.listaSeguidores.push(nombreSeguidor);
-        }
-
-        // 4. Guardar cambios
-        await yo.save();
-        await el.save();
-
-        // 5. Actualizar verificación si tienes esa función
-        if (typeof el.actualizarVerificacionAuto === 'function') {
-            await el.actualizarVerificacionAuto();
-        }
-
-        res.json({ 
-            success: true, 
-            estado: isFollowing ? 'unfollowed' : 'followed',
-            seguidores: el.listaSeguidores.length
-        });
-
     } catch (error) {
-        console.error("Error en Follow:", error);
-        res.status(500).json({ success: false, error: "Error de autenticación o servidor" });
+        res.status(500).json({ success: false, error: "Error al eliminar" });
     }
 });
 
-
-// Actualizar avatar
-app.put("/auth/update-avatar", [
-    body('usuario').notEmpty().trim(),
-    body('nuevaFoto').notEmpty().trim()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Datos inválidos" 
-            });
-        }
-
-        const { usuario, nuevaFoto } = req.body;
-        
-        await Usuario.findOneAndUpdate(
-            { usuario: usuario.toLowerCase() }, 
-            { $set: { avatar: nuevaFoto } }
-        );
-        
-        console.log(`✅ Avatar actualizado: @${usuario}`);
-        
-        res.json({ success: true });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al actualizar avatar" 
-        }); 
-    }
-});
-
-// Actualizar bio
-app.put("/auth/update-bio", [
-    body('usuario').notEmpty().trim(),
-    body('bio').isLength({ max: 200 })
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Bio muy larga (máx 200 caracteres)" 
-            });
-        }
-
-        const { usuario, bio } = req.body;
-        
-        await Usuario.findOneAndUpdate(
-            { usuario: usuario.toLowerCase() }, 
-            { $set: { bio: bio || '' } }
-        );
-        
-        console.log(`✅ Bio actualizada: @${usuario}`);
-        
-        res.json({ success: true });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al actualizar bio" 
-        }); 
-    }
-});
-
-// ✅ NUEVA RUTA: Actualizar perfil (avatar y bio juntos) - MÁS EFICIENTE
-app.put("/auth/update-profile", [
-    body('usuario').notEmpty().trim(),
-    body('avatar').optional(),
-    body('bio').optional().isLength({ max: 200 })
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Datos inválidos" 
-            });
-        }
-
-        const { usuario, avatar, bio } = req.body;
-        
-        // Construir objeto de actualización solo con campos proporcionados
-        const updateData = {};
-        if (avatar !== undefined && avatar !== null) updateData.avatar = avatar;
-        if (bio !== undefined && bio !== null) updateData.bio = bio;
-        
-        if (Object.keys(updateData).length === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Debes proporcionar al menos avatar o bio" 
-            });
-        }
-        
-        const usuarioActualizado = await Usuario.findOneAndUpdate(
-            { usuario: usuario.toLowerCase() }, 
-            { $set: updateData },
-            { new: true, lean: true }
-        );
-        
-        if (!usuarioActualizado) {
-            return res.status(404).json({ 
-                success: false, 
-                error: "Usuario no encontrado" 
-            });
-        }
-        
-        console.log(`✅ Perfil actualizado: @${usuario} - Avatar: ${avatar ? 'Sí' : 'No'}, Bio: ${bio ? 'Sí' : 'No'}`);
-        
-        res.json({ 
-            success: true,
-            avatar: usuarioActualizado.avatar,
-            bio: usuarioActualizado.bio
-        });
-    } catch (error) { 
-        console.error('[ERROR /auth/update-profile]:', error);
-        res.status(500).json({ 
-            success: false,
-            error: "Error al actualizar perfil" 
-        }); 
-    }
-});
-
-// Actualizar verificación manual (admin)
-app.put("/auth/admin/verificacion/:usuario", [
+// Cambiar nivel de verificación
+app.put('/auth/admin/verificacion/:username', [
     body('nivel').isInt({ min: 0, max: 3 })
 ], async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                mensaje: "Nivel debe ser 0-3" 
-            });
-        }
-
+        const { username } = req.params;
         const { nivel } = req.body;
 
         const user = await Usuario.findOneAndUpdate(
-            { usuario: req.params.usuario.toLowerCase() },
-            { verificadoNivel: nivel },
-            { new: true, lean: true }
-        );
+            { usuario: username.toLowerCase() },
+            { $set: { verificadoNivel: nivel } },
+            { new: true }
+        ).select('-password');
 
         if (!user) {
-            return res.status(404).json({ 
-                success: false, 
-                mensaje: "Usuario no encontrado" 
-            });
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
         }
 
-        console.log(`✨ Verificación manual: @${user.usuario} → Nivel ${nivel}`);
-
-        res.json({ 
-            success: true, 
-            verificadoNivel: user.verificadoNivel 
-        });
+        console.log(`✅ Verificación actualizada: @${username} → Nivel ${nivel}`);
+        res.json({ success: true, user });
     } catch (error) {
-        console.error('[ERROR /auth/admin/verificacion]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            error: "Error al actualizar verificación" 
-        });
+        res.status(500).json({ success: false, error: "Error al actualizar verificación" });
     }
 });
 
-// ========== BÚSQUEDA ==========
-app.get("/search", async (req, res) => {
+// ========== RUTAS DE PERFIL ==========
+app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
     try {
-        const { q, type = 'all', limit = 20 } = req.query;
+        const username = req.params.usuario.toLowerCase().trim();
+        const user = await Usuario.findOne({ usuario: username }).select('-password').lean();
 
-        if (!q || q.trim().length < 2) {
-            return res.status(400).json({ 
-                success: false, 
-                mensaje: "Búsqueda muy corta (mínimo 2 caracteres)" 
-            });
+        if (!user) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
         }
 
-        const searchQuery = q.trim();
-        let results = {};
-
-        if (type === 'all' || type === 'usuarios') {
-            results.usuarios = await Usuario.find({ 
-                usuario: { $regex: searchQuery, $options: 'i' }
-            })
-            .select('usuario avatar verificadoNivel listaSeguidores')
-            .limit(parseInt(limit))
-            .lean();
-            
-            // Agregar contador de seguidores
-            results.usuarios = results.usuarios.map(u => ({
-                ...u,
-                seguidores: u.listaSeguidores?.length || 0
-            }));
-        }
-
-        if (type === 'all' || type === 'items') {
-            results.items = await Juego.find({
-                status: 'aprobado',
-                $or: [
-                    { title: { $regex: searchQuery, $options: 'i' } },
-                    { description: { $regex: searchQuery, $options: 'i' } },
-                    { tags: { $in: [new RegExp(searchQuery, 'i')] } }
-                ]
-            })
-            .limit(parseInt(limit))
-            .lean();
-        }
+        const publicaciones = await Juego.countDocuments({ 
+            usuario: user.usuario, 
+            status: 'aprobado' 
+        });
 
         res.json({
             success: true,
-            query: searchQuery,
-            results
+            usuario: {
+                ...user,
+                publicaciones,
+                seguidores: user.listaSeguidores ? user.listaSeguidores.length : 0,
+                siguiendo: user.siguiendo ? user.siguiendo.length : 0
+            }
         });
-    } catch (error) {
-        console.error('[ERROR /search]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            error: "Error en búsqueda" 
-        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: "Error al cargar perfil" });
     }
 });
 
-// ========== HEALTH CHECK ==========
-app.get("/health", (req, res) => {
-    res.json({ 
-        success: true,
-        status: "OK",
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-        version: '2.0.0'
-    });
+app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
+    try {
+        const actual = req.params.actual.toLowerCase().trim();
+        const viendo = req.params.viendo.toLowerCase().trim();
+        const user = await Usuario.findOne({ usuario: actual });
+        const loSigo = user?.siguiendo?.includes(viendo);
+        res.json({ estaSiguiendo: !!loSigo });
+    } catch (err) {
+        res.json({ estaSiguiendo: false });
+    }
 });
 
-app.get("/", (req, res) => {
-    res.json({
-        success: true,
-        message: "🎮 UpGames API v2.0",
-        endpoints: {
-            items: "/items",
-            users: "/auth/users",
-            health: "/health"
+app.put('/usuarios/toggle-seguir/:actual/:objetivo', async (req, res) => {
+    try {
+        const actual = req.params.actual.toLowerCase();
+        const objetivo = req.params.objetivo.toLowerCase();
+        
+        const userActual = await Usuario.findOne({ usuario: actual });
+        const userObjetivo = await Usuario.findOne({ usuario: objetivo });
+        
+        if (!userActual || !userObjetivo) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
         }
+
+        const yaSigue = userActual.siguiendo.includes(objetivo);
+        
+        if (yaSigue) {
+            await Usuario.updateOne(
+                { usuario: actual },
+                { $pull: { siguiendo: objetivo } }
+            );
+            await Usuario.updateOne(
+                { usuario: objetivo },
+                { $pull: { listaSeguidores: actual } }
+            );
+            res.json({ success: true, siguiendo: false });
+        } else {
+            await Usuario.updateOne(
+                { usuario: actual },
+                { $addToSet: { siguiendo: objetivo } }
+            );
+            await Usuario.updateOne(
+                { usuario: objetivo },
+                { $addToSet: { listaSeguidores: actual } }
+            );
+            res.json({ success: true, siguiendo: true });
+        }
+    } catch (err) {
+        res.status(500).json({ success: false, error: "Error al actualizar" });
+    }
+});
+
+app.put('/usuarios/update-avatar', [
+    body('usuario').notEmpty(),
+    body('avatarUrl').notEmpty()
+], async (req, res) => {
+    try {
+        const { usuario, avatarUrl } = req.body;
+        await Usuario.updateOne(
+            { usuario: usuario.toLowerCase() },
+            { $set: { avatar: avatarUrl } }
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: "Error al actualizar avatar" });
+    }
+});
+
+app.put('/usuarios/update-bio', [
+    body('usuario').notEmpty(),
+    body('bio').isLength({ max: 200 })
+], async (req, res) => {
+    try {
+        const { usuario, bio } = req.body;
+        await Usuario.updateOne(
+            { usuario: usuario.toLowerCase() },
+            { $set: { bio } }
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, error: "Error al actualizar bio" });
+    }
+});
+
+// ========== RUTAS DE COMENTARIOS ==========
+app.get('/comentarios', async (req, res) => {
+    try {
+        const comms = await Comentario.find().sort({ fecha: -1 }).lean();
+        res.json(comms);
+    } catch (error) {
+        res.status(500).json([]);
+    }
+});
+
+app.get('/comentarios/:itemId', async (req, res) => {
+    try {
+        const comms = await Comentario.find({ itemId: req.params.itemId })
+            .sort({ fecha: -1 })
+            .lean();
+        res.json(comms);
+    } catch (error) {
+        res.status(500).json([]);
+    }
+});
+
+app.post('/comentarios', [
+    body('itemId').notEmpty(),
+    body('usuario').notEmpty(),
+    body('texto').notEmpty().isLength({ max: 500 })
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ success: false, error: "Datos inválidos" });
+        }
+
+        const nuevo = new Comentario(req.body);
+        await nuevo.save();
+        res.status(201).json({ success: true, comentario: nuevo });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al guardar comentario" });
+    }
+});
+
+app.delete('/comentarios/:id', async (req, res) => {
+    try {
+        await Comentario.findByIdAndDelete(req.params.id);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al eliminar" });
+    }
+});
+
+// ========== RUTAS DE FAVORITOS ==========
+app.post('/favoritos/add', [
+    body('usuario').notEmpty(),
+    body('itemId').isMongoId()
+], async (req, res) => {
+    try {
+        const { usuario, itemId } = req.body;
+        
+        const existe = await Favorito.findOne({ usuario, itemId });
+        if (existe) {
+            return res.status(400).json({ success: false, error: "Ya está en favoritos" });
+        }
+
+        const fav = new Favorito({ usuario, itemId });
+        await fav.save();
+        
+        res.json({ success: true, ok: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al guardar favorito" });
+    }
+});
+
+app.delete('/favoritos/remove', [
+    body('usuario').notEmpty(),
+    body('itemId').isMongoId()
+], async (req, res) => {
+    try {
+        const { usuario, itemId } = req.body;
+        await Favorito.deleteOne({ usuario, itemId });
+        res.json({ success: true, ok: true });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al eliminar favorito" });
+    }
+});
+
+app.get('/favoritos/:usuario', async (req, res) => {
+    try {
+        const favs = await Favorito.find({ usuario: req.params.usuario })
+            .populate({
+                path: 'itemId',
+                select: '_id title description image link category usuario status reportes linkStatus'
+            })
+            .lean();
+
+        const items = favs
+            .filter(f => f.itemId)
+            .map(fav => ({
+                _id: fav.itemId._id,
+                title: fav.itemId.title,
+                description: fav.itemId.description,
+                image: fav.itemId.image,
+                link: fav.itemId.link,
+                category: fav.itemId.category,
+                usuario: fav.itemId.usuario,
+                status: fav.itemId.status,
+                reportes: fav.itemId.reportes,
+                linkStatus: fav.itemId.linkStatus
+            }));
+
+        res.json(items);
+    } catch (error) {
+        res.status(500).json([]);
+    }
+});
+
+// ========== HEALTHCHECK ==========
+app.get('/', (req, res) => {
+    res.json({ 
+        status: 'UP', 
+        version: '2.0 - ADMIN ENHANCED',
+        timestamp: new Date().toISOString() 
     });
 });
 
 // ========== MANEJO DE ERRORES ==========
-app.use((err, req, res, next) => {
-    console.error(`❌ Error en ${req.method} ${req.path}:`, err.message);
-
-    if (err.name === 'ValidationError') {
-        return res.status(400).json({
-            success: false,
-            error: "Error de validación",
-            detalles: Object.values(err.errors).map(e => e.message)
-        });
-    }
-
-    if (err.code === 11000) {
-        return res.status(400).json({
-            success: false,
-            error: "Registro duplicado"
-        });
-    }
-
-    if (err.name === 'CastError') {
-        return res.status(400).json({
-            success: false,
-            error: "ID inválido"
-        });
-    }
-
-    res.status(500).json({ 
-        success: false,
-        error: "Error del servidor" 
-    });
-});
-
-// Ruta no encontrada
 app.use((req, res) => {
-    res.status(404).json({ 
-        success: false,
-        error: "Ruta no encontrada",
-        path: req.path
-    });
+    res.status(404).json({ error: "Endpoint no encontrado" });
 });
 
-// ========== SEÑALES DE TERMINACIÓN ==========
-process.on('SIGTERM', async () => {
-    console.log('⚠️ SIGTERM recibido. Cerrando servidor...');
-    await mongoose.connection.close();
-    process.exit(0);
+app.use((err, req, res, next) => {
+    console.error('Error no manejado:', err);
+    res.status(500).json({ error: "Error interno del servidor" });
 });
 
-process.on('SIGINT', async () => {
-    console.log('⚠️ SIGINT recibido. Cerrando servidor...');
-    await mongoose.connection.close();
-    process.exit(0);
-});
-
-// ========== INICIO DEL SERVIDOR ==========
+// ========== INICIAR SERVIDOR ==========
 const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-    ╔════════════════════════════════════════╗
-    ║   🎮 UPGAMES API v2.0                 ║
-    ║   ✅ Servidor: http://0.0.0.0:${PORT}   ║
-    ║   📡 MongoDB: Conectado                ║
-    ║   🛡️  Seguridad: Activada              ║
-    ╚════════════════════════════════════════╝
-    `);
+app.listen(PORT, () => {
+    console.log(`🔥 SERVIDOR CORRIENDO EN PUERTO ${PORT}`);
+    console.log(`📡 Endpoint: http://localhost:${PORT}`);
 });
-
-module.exports = app;
