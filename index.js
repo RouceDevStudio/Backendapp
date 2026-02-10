@@ -1170,6 +1170,23 @@ app.post('/auth/login', [
     }
 });
 
+/**
+ * ⭐ NUEVA RUTA: Obtener lista de usuarios con niveles de verificación
+ * (NECESARIA para el frontend script.js - línea 24)
+ */
+app.get('/auth/users', async (req, res) => {
+    try {
+        const usuarios = await Usuario.find()
+            .select('usuario verificadoNivel isVerificado')
+            .lean();
+        
+        res.json(usuarios);
+    } catch (error) {
+        console.error("❌ Error en /auth/users:", error);
+        res.status(500).json([]);
+    }
+});
+
 // ==========================================
 // RUTAS ORIGINALES DE ADMIN (MANTENER)
 // ==========================================
