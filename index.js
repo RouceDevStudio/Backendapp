@@ -1515,17 +1515,8 @@ app.get('/items/:id', async (req, res) => {
 // RUTAS DE USUARIOS
 // ==========================================
 
-app.get('/auth/users', async (req, res) => {
-    try {
-        const users = await Usuario.find()
-            .select('-password')
-            .sort({ fecha: -1 })
-            .lean();
-        res.json(users);
-    } catch (error) {
-        res.status(500).json([]);
-    }
-});
+// NOTA: La ruta GET /auth/users ya está definida arriba (línea 1177)
+// Esta sección solo contiene las rutas de DELETE y verificación
 
 app.delete('/auth/users/:id', async (req, res) => {
     try {
