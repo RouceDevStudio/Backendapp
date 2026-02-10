@@ -172,6 +172,26 @@ JuegoSchema.pre('save', function(next) {
     next();
 });
 
+
+// MIDDLEWARE: Verificar que el usuario está logueado
+const verificarToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Formato "Bearer TOKEN"
+
+    if (!token) {
+        return res.status(401).json({ success: false, error: "Acceso denegado. No hay token." });
+    }
+
+    try {
+        const verificado = jwt.verify(token, JWT_SECRET);
+        req.userTokenData = verificado; // Guardamos los datos del token (usuario, email)
+        next();
+    } catch (error) {
+        res.status(403).json({ success: false, error: "Token inválido o expirado" });
+    }
+};
+
+
 const Juego = mongoose.model('Juego', JuegoSchema);
 
 // SCHEMA: Usuarios
@@ -186,41 +206,49 @@ const UsuarioSchema = new mongoose.Schema({
         trim: true,
         lowercase: true
     },
+    // NUEVO: Email obligatorio y con formato validado
+    email: { 
+        type: String, 
+        required: [true, "El correo es obligatorio para pagos"], 
+        unique: true, 
+        lowercase: true,
+        trim: true,
+        match: [/^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/, 'Por favor usa un email válido']
+    },
     password: { 
         type: String, 
-        required: true,
+        required: true, 
         minlength: 6
     },
-    reputacion: { 
-        type: Number, 
-        default: 0
+    // NUEVO: Configuración de PayPal y Saldo
+    paypalEmail: { 
+        type: String, 
+        default: '',
+        lowercase: true,
+        trim: true
     },
+    saldo: { 
+        type: Number, 
+        default: 0,
+        min: 0 
+    },
+    descargasTotales: { 
+        type: Number, 
+        default: 0 
+    },
+    // Campos anteriores...
+    reputacion: { type: Number, default: 0 },
     listaSeguidores: [String],
     siguiendo: [String],
-    verificadoNivel: { 
-        type: Number, 
-        default: 0, 
-        min: 0, 
-        max: 3,
-        index: true
-    },
-    avatar: { 
-        type: String, 
-        default: ""
-    },
-    bio: {
-        type: String,
-        maxlength: 200,
-        default: ''
-    },
-    fecha: { 
-        type: Date, 
-        default: Date.now 
-    }
+    verificadoNivel: { type: Number, default: 0, min: 0, max: 3, index: true },
+    avatar: { type: String, default: "" },
+    bio: { type: String, maxlength: 200, default: '' },
+    fecha: { type: Date, default: Date.now }
 }, { 
     collection: 'usuarios',
     timestamps: true
 });
+
 
 const Usuario = mongoose.model('Usuario', UsuarioSchema);
 
@@ -242,8 +270,79 @@ const FavoritosSchema = new mongoose.Schema({
 
 const Favorito = mongoose.model('Favoritos', FavoritosSchema);
 
+
+
+
+// RUTA PLUG-IN: Validación de economía
+app.post('/items/verify-download/:id', async (req, res) => {
+    try {
+        const itemId = req.params.id;
+        const userIP = req.ip || req.headers['x-forwarded-for'];
+
+        // 1. Límite de 2 descargas por IP al día para ese juego
+        const descargasHoy = await DescargaIP.countDocuments({ ip: userIP, itemId });
+        if (descargasHoy >= 2) {
+            const item = await Juego.findById(itemId);
+            return res.json({ success: true, link: item.link, msg: "Límite de recompensa diario" });
+        }
+
+        // 2. Registrar IP y sumar saldo
+        await new DescargaIP({ ip: userIP, itemId }).save();
+        
+        const item = await Juego.findByIdAndUpdate(itemId, { $inc: { descargasEfectivas: 1 } });
+        
+        // El creador gana el 50% (Ejemplo: $1.25 por cada 1000 = $0.00125 por click)
+        const pago = 0.00125; 
+        await Usuario.findOneAndUpdate(
+            { usuario: item.usuario },
+            { $inc: { saldo: pago, descargasTotales: 1 } }
+        );
+
+        res.json({ success: true, link: item.link });
+    } catch (error) {
+        res.status(500).json({ error: "Error en validación" });
+    }
+});
+
+
+// Solo el dueño del token puede cambiar su propio PayPal
+app.put('/usuarios/configurar-paypal', verificarToken, async (req, res) => {
+    try {
+        const { paypalEmail } = req.body;
+        // Obtenemos el usuario directamente del token verificado
+        const usuarioLogueado = req.userTokenData.usuario; 
+
+        if (!paypalEmail || !paypalEmail.includes('@')) {
+            return res.status(400).json({ success: false, error: "Email de PayPal inválido" });
+        }
+
+        const user = await Usuario.findOneAndUpdate(
+            { usuario: usuarioLogueado.toLowerCase() },
+            { $set: { paypalEmail: paypalEmail.toLowerCase().trim() } },
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado en la base de datos" });
+        }
+
+        console.log(`💰 PayPal actualizado para: @${usuarioLogueado} -> ${paypalEmail}`);
+
+        res.json({ 
+            success: true, 
+            msg: "PayPal actualizado correctamente",
+            paypalEmail: user.paypalEmail 
+        });
+    } catch (error) {
+        console.error('[ERROR PayPal]:', error.message);
+        res.status(500).json({ success: false, error: "Error de servidor al guardar PayPal" });
+    }
+});
+
+
 // ==========================================
 // ⭐ NUEVAS RUTAS ADMIN - EDICIÓN COMPLETA
+
 // ==========================================
 
 // ⭐ NUEVA: Actualizar cualquier campo de un item (ADMIN)
@@ -294,6 +393,23 @@ app.put("/admin/items/:id", [
         res.status(500).json({ success: false, error: "Error al actualizar item" });
     }
 });
+
+
+
+app.get('/admin/payments-pending', async (req, res) => {
+    try {
+        // Busca usuarios con más de $10 y nivel verificado
+        const usuariosParaPagar = await Usuario.find({
+            saldo: { $gte: 10 },
+            verificacion: { $gte: 1 }
+        }).select('usuario email paypalEmail saldo descargasTotales');
+        
+        res.json(usuariosParaPagar);
+    } catch (error) {
+        res.status(500).json({ error: "Error al obtener pagos" });
+    }
+});
+
 
 // ⭐ NUEVA: Obtener todos los items con información completa para admin
 app.get("/admin/items", async (req, res) => {
@@ -539,6 +655,7 @@ app.delete("/items/:id", [
 // ========== RUTAS DE AUTENTICACIÓN ==========
 app.post('/auth/register', [
     body('usuario').isLength({ min: 3, max: 20 }).trim().toLowerCase(),
+    body('email').isEmail().withMessage('Email válido obligatorio').trim().toLowerCase(), // NUEVO
     body('password').isLength({ min: 6 })
 ], async (req, res) => {
     try {
@@ -546,31 +663,33 @@ app.post('/auth/register', [
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
                 success: false, 
-                error: "Usuario: 3-20 caracteres, Contraseña: min 6" 
+                error: "Datos inválidos: Usuario(3-20), Email válido y Contraseña(min 6)" 
             });
         }
 
-        const { usuario, password } = req.body;
+        const { usuario, email, password } = req.body;
         
-        const existe = await Usuario.findOne({ usuario });
+        // Verificar si el usuario O el email ya existen
+        const existe = await Usuario.findOne({ $or: [{ usuario }, { email }] });
         if (existe) {
             return res.status(400).json({ 
                 success: false, 
-                error: "Usuario ya existe" 
+                error: existe.usuario === usuario ? "El usuario ya existe" : "El email ya está registrado" 
             });
         }
 
         const hash = await bcrypt.hash(password, 10);
         const nuevoUser = new Usuario({ 
-            usuario, 
+            usuario,
+            email, // NUEVO
             password: hash 
         });
         
         await nuevoUser.save();
 
-        const token = jwt.sign({ usuario }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ usuario, email }, JWT_SECRET, { expiresIn: '30d' });
 
-        console.log(`✅ Nuevo usuario registrado: @${usuario}`);
+        console.log(`✅ Registro completo: @${usuario} (${email})`);
         
         res.status(201).json({ 
             success: true,
@@ -580,62 +699,53 @@ app.post('/auth/register', [
         });
     } catch (error) {
         console.error('[ERROR /auth/register]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            error: "Error en registro" 
-        });
+        res.status(500).json({ success: false, error: "Error en registro" });
     }
 });
 
 app.post('/auth/login', [
-    body('usuario').notEmpty().trim(),
+    body('usuario').notEmpty().trim(), // Aquí puede venir el nombre o el email
     body('password').notEmpty()
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Credenciales inválidas" 
-            });
-        }
+        if (!errors.isEmpty()) return res.status(400).json({ success: false, error: "Faltan datos" });
 
         const { usuario, password } = req.body;
-        const user = await Usuario.findOne({ usuario: usuario.toLowerCase() });
+        const query = usuario.toLowerCase();
+
+        // BUSQUEDA DUAL: Busca por nombre de usuario O por email
+        const user = await Usuario.findOne({
+            $or: [{ usuario: query }, { email: query }]
+        });
 
         if (!user) {
-            return res.status(401).json({ 
-                success: false,
-                error: "Usuario no existe" 
-            });
+            return res.status(401).json({ success: false, error: "Cuenta no encontrada" });
         }
 
         const validPass = await bcrypt.compare(password, user.password);
         if (!validPass) {
-            return res.status(401).json({ 
-                success: false,
-                error: "Contraseña incorrecta" 
-            });
+            return res.status(401).json({ success: false, error: "Contraseña incorrecta" });
         }
 
-        const token = jwt.sign({ usuario: user.usuario }, JWT_SECRET, { expiresIn: '30d' });
+        const token = jwt.sign({ usuario: user.usuario, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
 
-        console.log(`✅ Login exitoso: @${user.usuario}`);
+        console.log(`✅ Login: @${user.usuario}`);
         
         res.json({ 
             success: true,
             ok: true,
             usuario: user.usuario,
+            email: user.email, // Devolvemos el email para el frontend
             token
         });
     } catch (error) {
-        console.error('[ERROR /auth/login]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            error: "Error en login" 
-        });
+        res.status(500).json({ success: false, error: "Error en login" });
     }
 });
+
+
+
 
 // Obtener todos los usuarios
 app.get('/auth/users', async (req, res) => {
@@ -689,7 +799,7 @@ app.put('/auth/admin/verificacion/:username', [
 app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
     try {
         const username = req.params.usuario.toLowerCase().trim();
-        const user = await Usuario.findOne({ usuario: username }).select('-password').lean();
+        const user = await Usuario.findOne({ usuario: username }).select('-password -email -paypalEmail -saldo').lean();
 
         if (!user) {
             return res.status(404).json({ success: false, error: "Usuario no encontrado" });
