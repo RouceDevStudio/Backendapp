@@ -450,7 +450,7 @@ app.post('/economia/validar-descarga', [
                     success: true,
                     limiteAlcanzado: true,
                     mensaje: "Has alcanzado el límite de descargas para hoy",
-                    enlace: juego.link // ⭐ CORREGIDO: usar 'link' del modelo
+                    link: juego.link // ⭐ CORREGIDO: usar 'link' consistente con el frontend
                 });
             }
             // Incrementar contador
@@ -477,7 +477,7 @@ app.post('/economia/validar-descarga', [
             return res.json({
                 success: true,
                 descargaContada: true,
-                enlace: juego.link, // ⭐ CORREGIDO: usar 'link' del modelo
+                link: juego.link, // ⭐ CORREGIDO: usar 'link' consistente con el frontend
                 mensaje: "Descarga válida"
             });
         }
@@ -512,7 +512,7 @@ app.post('/economia/validar-descarga', [
         res.json({
             success: true,
             descargaContada: true,
-            enlace: juego.link, // ⭐ CORREGIDO: usar 'link' del modelo
+            link: juego.link, // ⭐ CORREGIDO: usar 'link' consistente con el frontend
             descargasEfectivas: juego.descargasEfectivas,
             mensaje: "Descarga válida y contada"
         });
@@ -1364,8 +1364,8 @@ app.get("/items", async (req, res) => {
         const { categoria } = req.query;
         const filtro = { 
             status: 'aprobado',
-            // ⭐ NUEVO: No mostrar links caídos en biblioteca
-            linkStatus: { $ne: 'caido' }
+            // ⭐ CORREGIDO: Solo ocultar links caídos, permitir "en revisión" y "online"
+            linkStatus: { $in: ['online', 'revision'] }
         };
         
         if (categoria && categoria !== 'Todo') {
