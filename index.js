@@ -450,7 +450,7 @@ app.post('/economia/validar-descarga', [
                     success: true,
                     limiteAlcanzado: true,
                     mensaje: "Has alcanzado el límite de descargas para hoy",
-                    enlace: juego.enlace // Se permite descargar, pero no se cuenta
+                    enlace: juego.link // ⭐ CORREGIDO: usar 'link' del modelo
                 });
             }
             // Incrementar contador
@@ -477,7 +477,7 @@ app.post('/economia/validar-descarga', [
             return res.json({
                 success: true,
                 descargaContada: true,
-                enlace: juego.enlace,
+                enlace: juego.link, // ⭐ CORREGIDO: usar 'link' del modelo
                 mensaje: "Descarga válida"
             });
         }
@@ -512,7 +512,7 @@ app.post('/economia/validar-descarga', [
         res.json({
             success: true,
             descargaContada: true,
-            enlace: juego.enlace,
+            enlace: juego.link, // ⭐ CORREGIDO: usar 'link' del modelo
             descargasEfectivas: juego.descargasEfectivas,
             mensaje: "Descarga válida y contada"
         });
