@@ -1170,23 +1170,6 @@ app.post('/auth/login', [
     }
 });
 
-/**
- * ⭐ NUEVA RUTA: Obtener lista de usuarios con niveles de verificación
- * (NECESARIA para el frontend script.js - línea 24)
- */
-app.get('/auth/users', async (req, res) => {
-    try {
-        const usuarios = await Usuario.find()
-            .select('usuario verificadoNivel isVerificado')
-            .lean();
-        
-        res.json(usuarios);
-    } catch (error) {
-        console.error("❌ Error en /auth/users:", error);
-        res.status(500).json([]);
-    }
-});
-
 // ==========================================
 // RUTAS ORIGINALES DE ADMIN (MANTENER)
 // ==========================================
@@ -1511,12 +1494,35 @@ app.get('/items/:id', async (req, res) => {
     }
 });
 
+
+
+
+app.get("/items/usuario/:usuario", async (req, res) => {
+    try {
+        const { usuario } = req.params;
+
+        const items = await Juego.find({ usuario }).lean();
+
+        res.json(items);
+    } catch (error) {
+        res.status(500).json({ error: "Error al cargar items del usuario" });
+    }
+});
 // ==========================================
 // RUTAS DE USUARIOS
 // ==========================================
 
-// NOTA: La ruta GET /auth/users ya está definida arriba (línea 1177)
-// Esta sección solo contiene las rutas de DELETE y verificación
+app.get('/auth/users', async (req, res) => {
+    try {
+        const users = await Usuario.find()
+            .select('-password')
+            .sort({ fecha: -1 })
+            .lean();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json([]);
+    }
+});
 
 app.delete('/auth/users/:id', async (req, res) => {
     try {
