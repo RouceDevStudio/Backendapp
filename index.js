@@ -450,7 +450,7 @@ app.post('/economia/validar-descarga', [
                     success: true,
                     limiteAlcanzado: true,
                     mensaje: "Has alcanzado el límite de descargas para hoy",
-                    enlace: juego.link // Se permite descargar, pero no se cuenta
+                    enlace: juego.enlace // Se permite descargar, pero no se cuenta
                 });
             }
             // Incrementar contador
@@ -477,7 +477,7 @@ app.post('/economia/validar-descarga', [
             return res.json({
                 success: true,
                 descargaContada: true,
-                enlace: juego.link,
+                enlace: juego.enlace,
                 mensaje: "Descarga válida"
             });
         }
@@ -512,7 +512,7 @@ app.post('/economia/validar-descarga', [
         res.json({
             success: true,
             descargaContada: true,
-            enlace: juego.link,
+            enlace: juego.enlace,
             descargasEfectivas: juego.descargasEfectivas,
             mensaje: "Descarga válida y contada"
         });
@@ -1496,18 +1496,6 @@ app.get('/items/:id', async (req, res) => {
 
 
 
-
-app.get("/items/usuario/:usuario", async (req, res) => {
-    try {
-        const { usuario } = req.params;
-
-        const items = await Juego.find({ usuario }).lean();
-
-        res.json(items);
-    } catch (error) {
-        res.status(500).json({ error: "Error al cargar items del usuario" });
-    }
-});
 // ==========================================
 // RUTAS DE USUARIOS
 // ==========================================
