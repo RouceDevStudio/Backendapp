@@ -8,6 +8,9 @@ const { body, validationResult, param } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 
+// ⚠️ NUEVO: Módulo de detección de fraude
+const fraudDetector = require('./fraudDetector');
+
 const app = express();
 
 // ========== CONFIGURACIÓN DE SEGURIDAD ==========
@@ -421,6 +424,7 @@ const MAX_DOWNLOADS_PER_IP_PER_DAY = 2; // Máximo 2 descargas efectivas por IP 
 
 /**
  * ⭐ ENDPOINT CRÍTICO: Validar descarga efectiva
+ * ⚠️ ACTUALIZADO: Ahora incluye detección automática de fraude
  * Este endpoint se llama desde puente.html después de que el usuario espera 30s
  */
 app.post('/economia/validar-descarga', [
@@ -472,14 +476,12 @@ app.post('/economia/validar-descarga', [
                     success: true,
                     limiteAlcanzado: true,
                     mensaje: "Has alcanzado el límite de descargas para hoy",
-                    link: juego.link // ⭐ CORREGIDO: usar 'link' consistente con el frontend
+                    link: juego.link
                 });
             }
-            // Incrementar contador
             registroIP.contadorHoy += 1;
             await registroIP.save();
         } else {
-            // Crear nuevo registro de IP
             registroIP = new DescargaIP({
                 juegoId,
                 ip,
@@ -499,32 +501,91 @@ app.post('/economia/validar-descarga', [
             return res.json({
                 success: true,
                 descargaContada: true,
-                link: juego.link, // ⭐ CORREGIDO: usar 'link' consistente con el frontend
+                link: juego.link,
                 mensaje: "Descarga válida"
+            });
+        }
+
+        // ⚠️ NUEVO: Verificar si el usuario está en lista negra
+        if (autor.listaNegraAdmin) {
+            console.log(`🚫 Usuario en lista negra detectado: @${autor.usuario} - Descarga NO contabilizada para ganancia`);
+            
+            // Incrementar contador de descargas pero NO sumar saldo
+            autor.descargasTotales += 1;
+            await autor.save();
+            
+            return res.json({
+                success: true,
+                descargaContada: true,
+                link: juego.link,
+                descargasEfectivas: juego.descargasEfectivas,
+                mensaje: "Descarga válida",
+                warning: "Usuario bajo revisión - ganancia suspendida"
             });
         }
 
         // Paso 5: Actualizar descargas totales del autor
         autor.descargasTotales += 1;
 
+        // Calcular ganancia potencial
+        let gananciaGenerada = 0;
+        let shouldAnalyzeFraud = false;
+
         // Paso 6: Verificar si el juego ya pasó el umbral de 2,000 descargas
         if (juego.descargasEfectivas > MIN_DOWNLOADS_TO_EARN) {
             // Paso 7: Verificar si el autor está verificado (nivel 1+)
             if (autor.isVerificado && autor.verificadoNivel >= 1) {
-                // ⭐ CÁLCULO DE GANANCIA
-                // CPM = $2.00 por 1,000 descargas
-                // Autor recibe 50% = $1.00 por 1,000 descargas
-                // Por cada descarga efectiva: $1.00 / 1,000 = $0.001
-                const ganancia = (CPM_VALUE * AUTHOR_PERCENTAGE) / 1000;
+                // Calcular ganancia
+                gananciaGenerada = (CPM_VALUE * AUTHOR_PERCENTAGE) / 1000;
+                autor.saldo += gananciaGenerada;
+                shouldAnalyzeFraud = true; // Solo analizar fraude si genera ganancia
                 
-                autor.saldo += ganancia;
-                
-                console.log(`💰 Ganancia generada - Autor: @${autor.usuario}, +$${ganancia.toFixed(4)} USD`);
+                console.log(`💰 Ganancia generada - Autor: @${autor.usuario}, +$${gananciaGenerada.toFixed(4)} USD`);
             } else {
                 console.log(`ℹ️ Autor no verificado - @${autor.usuario} - No se suma saldo`);
             }
         } else {
             console.log(`ℹ️ Juego aún no alcanza 2,000 descargas - Actual: ${juego.descargasEfectivas}`);
+        }
+
+        // ⚠️⚠️⚠️ NUEVO: ANÁLISIS DE FRAUDE AUTOMÁTICO ⚠️⚠️⚠️
+        if (shouldAnalyzeFraud) {
+            const fraudAnalysis = await fraudDetector.analyzeDownloadBehavior(
+                autor.usuario,
+                juegoId,
+                ip,
+                gananciaGenerada
+            );
+
+            if (fraudAnalysis.suspicious) {
+                console.log(`⚠️ COMPORTAMIENTO SOSPECHOSO - @${autor.usuario}:`);
+                fraudAnalysis.reasons.forEach(reason => console.log(`   - ${reason}`));
+
+                // Si la severidad es crítica o alta, marcar automáticamente
+                if (fraudAnalysis.autoFlag) {
+                    const flagged = await fraudDetector.autoFlagUser(
+                        Usuario,
+                        autor.usuario,
+                        `Detección automática: ${fraudAnalysis.reasons.join(', ')}`
+                    );
+
+                    if (flagged) {
+                        // ⚠️ REVERTIR LA GANANCIA DE ESTA DESCARGA
+                        autor.saldo -= gananciaGenerada;
+                        gananciaGenerada = 0;
+                        
+                        console.log(`🚫 Usuario auto-marcado y ganancia revertida: @${autor.usuario}`);
+                    }
+                }
+            }
+        } else {
+            // Aún así, registrar la descarga para tracking (sin ganancia)
+            await fraudDetector.analyzeDownloadBehavior(
+                autor.usuario,
+                juegoId,
+                ip,
+                0
+            );
         }
 
         await autor.save();
@@ -534,7 +595,7 @@ app.post('/economia/validar-descarga', [
         res.json({
             success: true,
             descargaContada: true,
-            link: juego.link, // ⭐ CORREGIDO: usar 'link' consistente con el frontend
+            link: juego.link,
             descargasEfectivas: juego.descargasEfectivas,
             mensaje: "Descarga válida y contada"
         });
@@ -2144,11 +2205,103 @@ app.get('/favoritos/:usuario', async (req, res) => {
     }
 });
 
+// ========== ⚠️ NUEVOS ENDPOINTS: DETECCIÓN DE FRAUDE (ADMIN) ==========
+
+/**
+ * Obtener estadísticas y actividades sospechosas
+ */
+app.get('/admin/fraud/suspicious-activities', async (req, res) => {
+    try {
+        const stats = await fraudDetector.getSuspiciousStats();
+        res.json({
+            success: true,
+            ...stats
+        });
+    } catch (error) {
+        console.error('❌ Error obteniendo actividades sospechosas:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error al obtener actividades sospechosas'
+        });
+    }
+});
+
+/**
+ * Marcar actividad como revisada
+ */
+app.put('/admin/fraud/mark-reviewed/:activityId', [
+    param('activityId').isMongoId(),
+    body('notasAdmin').optional().isString()
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({
+                success: false,
+                error: 'ID de actividad inválido'
+            });
+        }
+
+        const { activityId } = req.params;
+        const { notasAdmin } = req.body;
+
+        const activity = await fraudDetector.SuspiciousActivity.findById(activityId);
+        if (!activity) {
+            return res.status(404).json({
+                success: false,
+                error: 'Actividad no encontrada'
+            });
+        }
+
+        activity.revisado = true;
+        if (notasAdmin) {
+            activity.notasAdmin = notasAdmin;
+        }
+        await activity.save();
+
+        res.json({
+            success: true,
+            mensaje: 'Actividad marcada como revisada'
+        });
+    } catch (error) {
+        console.error('❌ Error marcando actividad como revisada:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error al marcar actividad'
+        });
+    }
+});
+
+/**
+ * Obtener historial de fraude de un usuario específico
+ */
+app.get('/admin/fraud/user-history/:usuario', async (req, res) => {
+    try {
+        const { usuario } = req.params;
+        
+        const activities = await fraudDetector.SuspiciousActivity.find({ usuario })
+            .sort({ fecha: -1 })
+            .limit(50);
+
+        res.json({
+            success: true,
+            usuario,
+            activities
+        });
+    } catch (error) {
+        console.error('❌ Error obteniendo historial de usuario:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Error al obtener historial'
+        });
+    }
+});
+
 // ========== HEALTHCHECK ==========
 app.get('/', (req, res) => {
     res.json({ 
         status: 'UP', 
-        version: '3.0 - ECONOMÍA UPGAMES COMPLETA',
+        version: '3.1 - ECONOMÍA UPGAMES + DETECCIÓN DE FRAUDE',
         timestamp: new Date().toISOString(),
         features: [
             'Sistema de economía CPM ($2.00/1000 descargas)',
@@ -2157,7 +2310,10 @@ app.get('/', (req, res) => {
             'Pagos PayPal automatizados',
             'Panel Admin de Finanzas completo',
             'Sistema de links caídos',
-            'Verificación de usuarios multi-nivel'
+            'Verificación de usuarios multi-nivel',
+            '⚠️ NUEVO: Detección automática de fraude',
+            '⚠️ NUEVO: Auto-marcación en lista negra',
+            '⚠️ NUEVO: Análisis de comportamiento en tiempo real'
         ]
     });
 });
@@ -2182,4 +2338,6 @@ app.listen(PORT, () => {
     console.log(`🎯 Umbral de ganancias: ${MIN_DOWNLOADS_TO_EARN} descargas`);
     console.log(`💵 Retiro mínimo: $${MIN_WITHDRAWAL} USD`);
     console.log(`🛡️ Anti-bots: Máx ${MAX_DOWNLOADS_PER_IP_PER_DAY} descargas/IP/día`);
+    console.log(`⚠️ Sistema de detección de fraude: ACTIVO`);
+    console.log(`🚫 Auto-marcación en lista negra: HABILITADA`);
 });
