@@ -301,6 +301,28 @@ const UsuarioSchema = new mongoose.Schema({
     fecha: { 
         type: Date, 
         default: Date.now 
+    },
+    // ⭐ IP de registro (capturada al hacer register)
+    registrationIP: {
+        type: String,
+        default: ''
+    },
+    // ⭐ LISTA NEGRA ADMIN (solo visible en panel de admin)
+    listaNegraAdmin: {
+        type: Boolean,
+        default: false,
+        index: true
+    },
+    // ⭐ Notas privadas de admin sobre el usuario
+    notasAdmin: {
+        type: String,
+        default: '',
+        maxlength: 500
+    },
+    // ⭐ Fecha en que fue agregado a lista negra
+    fechaListaNegra: {
+        type: Date,
+        default: null
     }
 }, { 
     collection: 'usuarios',
@@ -1047,6 +1069,12 @@ app.post('/auth/register', [
 
         const { usuario, email, password } = req.body;
 
+        // Capturar IP de registro
+        const registrationIP = req.headers['x-forwarded-for']?.split(',')[0].trim() || 
+                                req.headers['x-real-ip'] || 
+                                req.connection?.remoteAddress || 
+                                req.socket?.remoteAddress || '';
+
         // Verificar si el usuario ya existe
         const existeUsuario = await Usuario.findOne({ usuario: usuario.toLowerCase() });
         if (existeUsuario) {
@@ -1072,7 +1100,8 @@ app.post('/auth/register', [
         const nuevoUsuario = new Usuario({
             usuario: usuario.toLowerCase(),
             email: email.toLowerCase(),
-            password: hashedPassword
+            password: hashedPassword,
+            registrationIP: registrationIP
         });
 
         await nuevoUsuario.save();
@@ -1167,6 +1196,260 @@ app.post('/auth/login', [
     } catch (error) {
         console.error("❌ Error en login:", error);
         res.status(500).json({ success: false, error: "Error al iniciar sesión" });
+    }
+});
+
+// ==========================================
+// ⭐⭐⭐ RUTAS ADMIN DE PODER - DASHBOARD & CONTROL TOTAL
+// ==========================================
+
+/**
+ * ⭐ DASHBOARD: Métricas globales en tiempo real
+ */
+app.get('/admin/stats/dashboard', async (req, res) => {
+    try {
+        const ahora = new Date();
+        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+        const semana = new Date(ahora.getTime() - 7 * 24 * 60 * 60 * 1000);
+        const mes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
+
+        const [
+            totalUsers, usersHoy, usersSemana,
+            totalItems, itemsPendientes, itemsAprobados, itemsHoy,
+            totalDescargas, descargasHoy,
+            saldoTotal, saldoPendientePago,
+            totalComentarios, comentariosHoy,
+            topUploaders, usuariosListaNegra,
+            itemsMasDescargados
+        ] = await Promise.all([
+            Usuario.countDocuments(),
+            Usuario.countDocuments({ createdAt: { $gte: hoy } }),
+            Usuario.countDocuments({ createdAt: { $gte: semana } }),
+            Juego.countDocuments(),
+            Juego.countDocuments({ status: { $in: ['pendiente', 'pending'] } }),
+            Juego.countDocuments({ status: 'aprobado' }),
+            Juego.countDocuments({ createdAt: { $gte: hoy } }),
+            Juego.aggregate([{ $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }]),
+            DescargaIP.countDocuments({ fecha: { $gte: hoy } }),
+            Usuario.aggregate([{ $group: { _id: null, total: { $sum: '$saldo' } } }]),
+            Pago.aggregate([{ $match: { estado: 'pendiente' } }, { $group: { _id: null, total: { $sum: '$monto' } } }]),
+            Comentario.countDocuments(),
+            Comentario.countDocuments({ fecha: { $gte: hoy } }),
+            Juego.aggregate([
+                { $match: { status: 'aprobado' } },
+                { $group: { _id: '$usuario', totalDescargas: { $sum: '$descargasEfectivas' }, totalItems: { $sum: 1 } } },
+                { $sort: { totalDescargas: -1 } },
+                { $limit: 5 }
+            ]),
+            Usuario.countDocuments({ listaNegraAdmin: true }),
+            Juego.find({ status: 'aprobado' }).sort({ descargasEfectivas: -1 }).limit(5).select('title usuario descargasEfectivas').lean()
+        ]);
+
+        res.json({
+            success: true,
+            dashboard: {
+                usuarios: {
+                    total: totalUsers,
+                    hoy: usersHoy,
+                    semana: usersSemana,
+                    listaNegra: usuariosListaNegra
+                },
+                items: {
+                    total: totalItems,
+                    pendientes: itemsPendientes,
+                    aprobados: itemsAprobados,
+                    hoy: itemsHoy
+                },
+                descargas: {
+                    total: totalDescargas[0]?.total || 0,
+                    hoy: descargasHoy
+                },
+                finanzas: {
+                    saldoEnCirculacion: parseFloat((saldoTotal[0]?.total || 0).toFixed(2)),
+                    pendienteDePago: parseFloat((saldoPendientePago[0]?.total || 0).toFixed(2))
+                },
+                comentarios: {
+                    total: totalComentarios,
+                    hoy: comentariosHoy
+                },
+                topUploaders,
+                itemsMasDescargados
+            }
+        });
+    } catch (error) {
+        console.error("❌ Error en dashboard:", error);
+        res.status(500).json({ success: false, error: "Error al cargar dashboard" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Ajustar saldo de usuario manualmente
+ */
+app.put('/admin/users/ajustar-saldo/:id', [
+    param('id').isMongoId(),
+    body('saldo').isFloat({ min: 0 }),
+    body('motivo').optional().trim()
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ success: false, error: "Datos inválidos" });
+
+        const { saldo, motivo } = req.body;
+        const user = await Usuario.findByIdAndUpdate(
+            req.params.id,
+            { $set: { saldo: parseFloat(saldo) } },
+            { new: true }
+        ).select('-password');
+
+        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+
+        console.log(`💰 ADMIN: Saldo ajustado @${user.usuario} → $${saldo} (${motivo || 'Sin motivo'})`);
+        res.json({ success: true, usuario: user.usuario, nuevoSaldo: user.saldo });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al ajustar saldo" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Aprobar/Rechazar items en lote
+ */
+app.put('/admin/items/bulk-action', [
+    body('ids').isArray({ min: 1 }),
+    body('action').isIn(['aprobar', 'rechazar', 'eliminar', 'online', 'caido'])
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ success: false, error: "Datos inválidos" });
+
+        const { ids, action } = req.body;
+        let resultado;
+
+        if (action === 'aprobar') {
+            resultado = await Juego.updateMany(
+                { _id: { $in: ids } },
+                { $set: { status: 'aprobado' } }
+            );
+        } else if (action === 'rechazar') {
+            resultado = await Juego.updateMany(
+                { _id: { $in: ids } },
+                { $set: { status: 'rechazado' } }
+            );
+        } else if (action === 'eliminar') {
+            resultado = await Juego.deleteMany({ _id: { $in: ids } });
+        } else if (action === 'online') {
+            resultado = await Juego.updateMany(
+                { _id: { $in: ids } },
+                { $set: { linkStatus: 'online', reportes: 0 } }
+            );
+        } else if (action === 'caido') {
+            resultado = await Juego.updateMany(
+                { _id: { $in: ids } },
+                { $set: { linkStatus: 'caido' } }
+            );
+        }
+
+        const afectados = resultado?.modifiedCount || resultado?.deletedCount || 0;
+        console.log(`✅ ADMIN BULK: ${action} en ${afectados} items`);
+        res.json({ success: true, afectados, action });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error en acción en lote" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Rechazar pago desde panel
+ */
+app.post('/admin/finanzas/rechazar-pago-admin/:id', [
+    param('id').isMongoId(),
+    body('motivo').optional().trim()
+], async (req, res) => {
+    try {
+        const pago = await Pago.findById(req.params.id);
+        if (!pago) return res.status(404).json({ success: false, error: "Pago no encontrado" });
+        if (pago.estado !== 'pendiente') return res.status(400).json({ success: false, error: "El pago ya fue procesado" });
+
+        pago.estado = 'rechazado';
+        pago.notas = req.body.motivo || 'Rechazado por el administrador';
+        await pago.save();
+
+        await Usuario.updateOne({ usuario: pago.usuario }, { $set: { solicitudPagoPendiente: false } });
+
+        console.log(`❌ ADMIN: Pago rechazado @${pago.usuario}`);
+        res.json({ success: true, mensaje: "Pago rechazado" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al rechazar pago" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Historial completo de pagos (pendientes + completados + rechazados)
+ */
+app.get('/admin/finanzas/historial-completo', async (req, res) => {
+    try {
+        const { estado, limite = 100 } = req.query;
+        const filtro = estado ? { estado } : {};
+        const historial = await Pago.find(filtro)
+            .sort({ fecha: -1 })
+            .limit(parseInt(limite))
+            .lean();
+        res.json({ success: true, historial, total: historial.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al cargar historial" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Top usuarios por saldo / descargas
+ */
+app.get('/admin/stats/top-usuarios', async (req, res) => {
+    try {
+        const { por = 'saldo', limite = 10 } = req.query;
+        const sortField = por === 'descargas' ? { descargasTotales: -1 } : { saldo: -1 };
+        
+        const users = await Usuario.find({ [por === 'descargas' ? 'descargasTotales' : 'saldo']: { $gt: 0 } })
+            .sort(sortField)
+            .limit(parseInt(limite))
+            .select('usuario email saldo descargasTotales verificadoNivel paypalEmail')
+            .lean();
+
+        res.json({ success: true, users, criterio: por });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al cargar top usuarios" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Eliminar TODOS los items de un usuario
+ */
+app.delete('/admin/users/:id/items', [param('id').isMongoId()], async (req, res) => {
+    try {
+        const user = await Usuario.findById(req.params.id).select('usuario');
+        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+
+        const resultado = await Juego.deleteMany({ usuario: user.usuario });
+        console.log(`🗑️ ADMIN: ${resultado.deletedCount} items de @${user.usuario} eliminados`);
+        res.json({ success: true, eliminados: resultado.deletedCount, usuario: user.usuario });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al eliminar items" });
+    }
+});
+
+/**
+ * ⭐ ADMIN: Resetear saldo a 0 (sanción financiera)
+ */
+app.put('/admin/users/:id/reset-saldo', [param('id').isMongoId()], async (req, res) => {
+    try {
+        const user = await Usuario.findByIdAndUpdate(
+            req.params.id,
+            { $set: { saldo: 0, solicitudPagoPendiente: false } },
+            { new: true }
+        ).select('usuario saldo');
+
+        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        console.log(`⚡ ADMIN: Saldo reseteado a 0 para @${user.usuario}`);
+        res.json({ success: true, usuario: user.usuario });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al resetear saldo" });
     }
 });
 
@@ -1509,6 +1792,94 @@ app.get('/auth/users', async (req, res) => {
         res.json(users);
     } catch (error) {
         res.status(500).json([]);
+    }
+});
+
+// ⭐ ADMIN: Obtener datos completos de un usuario (para panel admin)
+app.get('/admin/users/detalle/:id', async (req, res) => {
+    try {
+        const user = await Usuario.findById(req.params.id)
+            .select('-password')
+            .lean();
+        
+        if (!user) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        }
+
+        // Obtener juegos del usuario
+        const juegos = await Juego.find({ usuario: user.usuario })
+            .select('title status descargasEfectivas linkStatus createdAt')
+            .lean();
+
+        res.json({ success: true, user, juegos });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al obtener datos" });
+    }
+});
+
+// ⭐ ADMIN: Toggle lista negra
+app.put('/admin/users/lista-negra/:id', [
+    body('listaNegraAdmin').isBoolean(),
+    body('notasAdmin').optional().trim().isLength({ max: 500 })
+], async (req, res) => {
+    try {
+        const { listaNegraAdmin, notasAdmin } = req.body;
+
+        const updates = { 
+            listaNegraAdmin: !!listaNegraAdmin,
+            fechaListaNegra: listaNegraAdmin ? new Date() : null
+        };
+        if (notasAdmin !== undefined) updates.notasAdmin = notasAdmin;
+
+        const user = await Usuario.findByIdAndUpdate(
+            req.params.id,
+            { $set: updates },
+            { new: true }
+        ).select('-password');
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        }
+
+        console.log(`🚫 Lista negra actualizada: @${user.usuario} → ${listaNegraAdmin}`);
+        res.json({ success: true, user });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al actualizar lista negra" });
+    }
+});
+
+// ⭐ ADMIN: Actualizar notas del admin sobre un usuario
+app.put('/admin/users/notas/:id', [
+    body('notasAdmin').trim().isLength({ max: 500 })
+], async (req, res) => {
+    try {
+        const { notasAdmin } = req.body;
+        const user = await Usuario.findByIdAndUpdate(
+            req.params.id,
+            { $set: { notasAdmin } },
+            { new: true }
+        ).select('-password');
+
+        if (!user) {
+            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        }
+
+        res.json({ success: true, mensaje: "Notas actualizadas" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al guardar notas" });
+    }
+});
+
+// ⭐ ADMIN: Obtener solo usuarios en lista negra
+app.get('/admin/users/lista-negra', async (req, res) => {
+    try {
+        const users = await Usuario.find({ listaNegraAdmin: true })
+            .select('-password')
+            .sort({ fechaListaNegra: -1 })
+            .lean();
+        res.json({ success: true, users, total: users.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al obtener lista negra" });
     }
 });
 
