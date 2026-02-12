@@ -94,11 +94,17 @@ app.use((req, res, next) => {
 });
 
 // ========== CONEXIÓN MONGODB ==========
-const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://adminupgames2026:78simon87@cluster0.turx6r1.mongodb.net/UpGames?retryWrites=true&w=majority";
-const JWT_SECRET = process.env.JWT_SECRET || "upgames_secret_key_2026_secure";
+const MONGODB_URI = process.env.MONGODB_URI;
+const JWT_SECRET  = process.env.JWT_SECRET;
+
+if (!MONGODB_URI || !JWT_SECRET) {
+    console.error("❌ FALTAN VARIABLES DE ENTORNO: MONGODB_URI y JWT_SECRET son obligatorias.");
+    process.exit(1);
+}
 
 mongoose.connect(MONGODB_URI, {
-    maxPoolSize: 10,
+    maxPoolSize: 5,           // Reducido de 10 → ahorra ~50-80MB de RAM en plan gratuito
+    minPoolSize: 1,
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
 })
@@ -490,9 +496,9 @@ app.post('/economia/validar-descarga', [
             await registroIP.save();
         }
 
-        // Paso 3: Incrementar descargas efectivas del juego
-        juego.descargasEfectivas += 1;
-        await juego.save();
+        // Paso 3: Incrementar descargas efectivas del juego (atómico, sin cargar middleware pre-save)
+        await Juego.findByIdAndUpdate(juegoId, { $inc: { descargasEfectivas: 1 } });
+        juego.descargasEfectivas += 1; // Actualizar en memoria para usarlo más abajo
 
         // Paso 4: Obtener el autor del juego
         const autor = await Usuario.findOne({ usuario: juego.usuario });
@@ -548,7 +554,8 @@ app.post('/economia/validar-descarga', [
             console.log(`ℹ️ Juego aún no alcanza 2,000 descargas - Actual: ${juego.descargasEfectivas}`);
         }
 
-        // ⚠️⚠️⚠️ NUEVO: ANÁLISIS DE FRAUDE AUTOMÁTICO ⚠️⚠️⚠️
+        // ⚠️ ANÁLISIS DE FRAUDE: Solo se ejecuta si el juego superó el umbral Y el autor está verificado
+        // (cuando shouldAnalyzeFraud = true). En otros casos no tiene sentido registrar en download_tracking.
         if (shouldAnalyzeFraud) {
             const fraudAnalysis = await fraudDetector.analyzeDownloadBehavior(
                 autor.usuario,
@@ -578,14 +585,6 @@ app.post('/economia/validar-descarga', [
                     }
                 }
             }
-        } else {
-            // Aún así, registrar la descarga para tracking (sin ganancia)
-            await fraudDetector.analyzeDownloadBehavior(
-                autor.usuario,
-                juegoId,
-                ip,
-                0
-            );
         }
 
         await autor.save();
@@ -2301,7 +2300,7 @@ app.get('/admin/fraud/user-history/:usuario', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({ 
         status: 'UP', 
-        version: '3.1 - ECONOMÍA UPGAMES + DETECCIÓN DE FRAUDE',
+        version: '3.2 - JOBS AUTOMÁTICOS + VERIFICACIÓN INTELIGENTE',
         timestamp: new Date().toISOString(),
         features: [
             'Sistema de economía CPM ($2.00/1000 descargas)',
@@ -2311,9 +2310,15 @@ app.get('/', (req, res) => {
             'Panel Admin de Finanzas completo',
             'Sistema de links caídos',
             'Verificación de usuarios multi-nivel',
-            '⚠️ NUEVO: Detección automática de fraude',
-            '⚠️ NUEVO: Auto-marcación en lista negra',
-            '⚠️ NUEVO: Análisis de comportamiento en tiempo real'
+            'Detección automática de fraude',
+            'Auto-marcación en lista negra',
+            'Análisis de comportamiento en tiempo real',
+            '⚙️ NUEVO: Auto-ping anti-sleep (cada 14 min)',
+            '⚙️ NUEVO: Limpieza de comentarios (cada 24h)',
+            '⚙️ NUEVO: Reset de reportes confirmados (cada 12h)',
+            '⚙️ NUEVO: Auto-rechazo de pendientes +7 días (cada 24h)',
+            '⚙️ NUEVO: Auto-marcado de links caídos +72h (cada 6h)',
+            '⚙️ NUEVO: Auto-verificación por seguidores (cada 6h)'
         ]
     });
 });
@@ -2328,6 +2333,246 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: "Error interno del servidor" });
 });
 
+// ============================================================
+// ⚙️ JOBS AUTOMÁTICOS
+// Se inician después de que el servidor arranca.
+// Cada job corre de forma independiente y con manejo de errores
+// para que si uno falla no afecte a los demás ni al servidor.
+// ============================================================
+
+function iniciarJobsAutomaticos() {
+
+    // ----------------------------------------------------------
+    // JOB 1: AUTO-PING (cada 14 minutos)
+    // Evita que Render duerma el servidor.
+    // Se hace al propio endpoint / del servidor.
+    // ----------------------------------------------------------
+    const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${process.env.PORT || 10000}`;
+
+    setInterval(async () => {
+        try {
+            const res = await fetch(`${SELF_URL}/`);
+            console.log(`🏓 Auto-ping OK [${new Date().toLocaleTimeString('es-ES')}] - Status: ${res.status}`);
+        } catch (err) {
+            console.warn(`⚠️ Auto-ping falló: ${err.message}`);
+        }
+    }, 14 * 60 * 1000); // 14 minutos
+
+    console.log('🏓 JOB 1: Auto-ping activo (cada 14 min)');
+
+    // ----------------------------------------------------------
+    // JOB 2: LIMPIAR COMENTARIOS VACÍOS Y DUPLICADOS (cada 24h)
+    // - Elimina comentarios con texto vacío o solo espacios
+    // - Elimina duplicados: mismo usuario, mismo item, mismo texto
+    //   en menos de 60 segundos (spam de botones)
+    // ----------------------------------------------------------
+    async function limpiarComentarios() {
+        try {
+            // 2A: Borrar comentarios vacíos
+            const vacios = await Comentario.deleteMany({
+                $or: [
+                    { texto: { $exists: false } },
+                    { texto: null },
+                    { texto: '' },
+                    { texto: /^\s+$/ }
+                ]
+            });
+
+            // 2B: Detectar y eliminar duplicados (mismo usuario + item + texto en <60s)
+            const duplicados = await Comentario.aggregate([
+                {
+                    $group: {
+                        _id: { usuario: '$usuario', itemId: '$itemId', texto: '$texto' },
+                        ids: { $push: '$_id' },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $match: { count: { $gt: 1 } } }
+            ]);
+
+            let eliminadosDuplicados = 0;
+            for (const grupo of duplicados) {
+                // Conservar el primero (ids[0]), eliminar el resto
+                const aEliminar = grupo.ids.slice(1);
+                await Comentario.deleteMany({ _id: { $in: aEliminar } });
+                eliminadosDuplicados += aEliminar.length;
+            }
+
+            if (vacios.deletedCount > 0 || eliminadosDuplicados > 0) {
+                console.log(`🧹 JOB 2 Comentarios: ${vacios.deletedCount} vacíos + ${eliminadosDuplicados} duplicados eliminados`);
+            } else {
+                console.log(`🧹 JOB 2 Comentarios: sin basura encontrada`);
+            }
+        } catch (err) {
+            console.error('❌ JOB 2 Error limpiando comentarios:', err.message);
+        }
+    }
+
+    limpiarComentarios(); // Correr al arrancar
+    setInterval(limpiarComentarios, 24 * 60 * 60 * 1000); // Cada 24h
+    console.log('🧹 JOB 2: Limpieza de comentarios activa (cada 24h)');
+
+    // ----------------------------------------------------------
+    // JOB 3: RESETEAR REPORTES DE JUEGOS EN ESTADO 'online' (cada 12h)
+    // Si un juego lleva más de 48h con linkStatus='online' y tiene
+    // reportes > 0, significa que el admin lo revisó y lo confirmó.
+    // Los reportes viejos ya no tienen relevancia → resetear a 0.
+    // ----------------------------------------------------------
+    async function resetearReportesOnline() {
+        try {
+            const hace48h = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
+            const resultado = await Juego.updateMany(
+                {
+                    linkStatus: 'online',
+                    reportes: { $gt: 0 },
+                    updatedAt: { $lte: hace48h }
+                },
+                { $set: { reportes: 0 } }
+            );
+
+            if (resultado.modifiedCount > 0) {
+                console.log(`🔄 JOB 3 Reportes: ${resultado.modifiedCount} juegos reseteados a 0 reportes`);
+            } else {
+                console.log(`🔄 JOB 3 Reportes: ningún juego necesitaba reset`);
+            }
+        } catch (err) {
+            console.error('❌ JOB 3 Error reseteando reportes:', err.message);
+        }
+    }
+
+    setInterval(resetearReportesOnline, 12 * 60 * 60 * 1000); // Cada 12h
+    console.log('🔄 JOB 3: Reset de reportes activo (cada 12h)');
+
+    // ----------------------------------------------------------
+    // JOB 4: AUTO-RECHAZAR ITEMS PENDIENTES VIEJOS (cada 24h)
+    // Items con status 'pendiente' o 'pending' de más de 7 días
+    // se rechazan automáticamente para no saturar la cola de admin.
+    // ----------------------------------------------------------
+    async function autoRechazarPendientes() {
+        try {
+            const hace7dias = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+            const resultado = await Juego.updateMany(
+                {
+                    status: { $in: ['pendiente', 'pending'] },
+                    createdAt: { $lte: hace7dias }
+                },
+                {
+                    $set: {
+                        status: 'rechazado',
+                        linkStatus: 'caido'
+                    }
+                }
+            );
+
+            if (resultado.modifiedCount > 0) {
+                console.log(`⏰ JOB 4 Pendientes: ${resultado.modifiedCount} items auto-rechazados por expiración (7 días)`);
+            } else {
+                console.log(`⏰ JOB 4 Pendientes: no hay items expirados`);
+            }
+        } catch (err) {
+            console.error('❌ JOB 4 Error en auto-rechazo:', err.message);
+        }
+    }
+
+    autoRechazarPendientes(); // Correr al arrancar
+    setInterval(autoRechazarPendientes, 24 * 60 * 60 * 1000); // Cada 24h
+    console.log('⏰ JOB 4: Auto-rechazo de pendientes activo (cada 24h)');
+
+    // ----------------------------------------------------------
+    // JOB 5: AUTO-MARCAR LINKS CAÍDOS POR REPORTES (cada 6h)
+    // Si un juego lleva más de 72h en 'revision' y tiene 10+
+    // reportes sin que el admin lo toque, se marca como 'caido'.
+    // ----------------------------------------------------------
+    async function autoMarcarCaidos() {
+        try {
+            const hace72h = new Date(Date.now() - 72 * 60 * 60 * 1000);
+
+            const resultado = await Juego.updateMany(
+                {
+                    linkStatus: 'revision',
+                    reportes: { $gte: 10 },
+                    updatedAt: { $lte: hace72h }
+                },
+                { $set: { linkStatus: 'caido' } }
+            );
+
+            if (resultado.modifiedCount > 0) {
+                console.log(`🚨 JOB 5 Links: ${resultado.modifiedCount} links auto-marcados como caídos (10+ reportes, 72h sin revisión)`);
+            } else {
+                console.log(`🚨 JOB 5 Links: ningún link requirió auto-marcar`);
+            }
+        } catch (err) {
+            console.error('❌ JOB 5 Error marcando links caídos:', err.message);
+        }
+    }
+
+    setInterval(autoMarcarCaidos, 6 * 60 * 60 * 1000); // Cada 6h
+    console.log('🚨 JOB 5: Auto-marcado de links caídos activo (cada 6h)');
+
+    // ----------------------------------------------------------
+    // JOB 6: AUTO-VERIFICACIÓN POR SEGUIDORES (cada 6h)
+    // Revisa todos los usuarios y asigna nivel de verificación
+    // basado en su cantidad de seguidores:
+    //   100+  seguidores → nivel 1
+    //   500+  seguidores → nivel 2
+    //   1000+ seguidores → nivel 3
+    // El admin siempre puede sobreescribir manualmente desde el panel.
+    // IMPORTANTE: Solo SUBE el nivel automáticamente, nunca lo baja.
+    // Si el admin asignó nivel 3 manualmente con 50 seguidores, se respeta.
+    // ----------------------------------------------------------
+    async function autoVerificarUsuarios() {
+        try {
+            // Obtener todos los usuarios con sus seguidores (solo lo necesario)
+            const usuarios = await Usuario.find({})
+                .select('usuario listaSeguidores verificadoNivel')
+                .lean();
+
+            let subieron = 0;
+
+            const operaciones = usuarios.map(user => {
+                const seguidores = (user.listaSeguidores || []).length;
+
+                let nivelMerecido = 0;
+                if (seguidores >= 1000) nivelMerecido = 3;
+                else if (seguidores >= 500)  nivelMerecido = 2;
+                else if (seguidores >= 100)  nivelMerecido = 1;
+
+                // Solo actualizar si el nivel merecido es MAYOR al que tiene
+                // (nunca bajar por automatismo)
+                if (nivelMerecido > (user.verificadoNivel || 0)) {
+                    subieron++;
+                    return {
+                        updateOne: {
+                            filter: { usuario: user.usuario },
+                            update: { $set: { verificadoNivel: nivelMerecido, isVerificado: nivelMerecido >= 1 } }
+                        }
+                    };
+                }
+                return null;
+            }).filter(Boolean);
+
+            if (operaciones.length > 0) {
+                await Usuario.bulkWrite(operaciones);
+                console.log(`✅ JOB 6 Verificación: ${subieron} usuarios subieron de nivel automáticamente`);
+            } else {
+                console.log(`✅ JOB 6 Verificación: todos los niveles están al día`);
+            }
+        } catch (err) {
+            console.error('❌ JOB 6 Error en auto-verificación:', err.message);
+        }
+    }
+
+    autoVerificarUsuarios(); // Correr al arrancar
+    setInterval(autoVerificarUsuarios, 6 * 60 * 60 * 1000); // Cada 6h
+    console.log('✅ JOB 6: Auto-verificación por seguidores activa (cada 6h)');
+
+    console.log('');
+    console.log('⚙️  TODOS LOS JOBS AUTOMÁTICOS INICIADOS');
+    console.log('─────────────────────────────────────────');
+}
+
 // ========== INICIAR SERVIDOR ==========
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
@@ -2340,4 +2585,9 @@ app.listen(PORT, () => {
     console.log(`🛡️ Anti-bots: Máx ${MAX_DOWNLOADS_PER_IP_PER_DAY} descargas/IP/día`);
     console.log(`⚠️ Sistema de detección de fraude: ACTIVO`);
     console.log(`🚫 Auto-marcación en lista negra: HABILITADA`);
+
+    // Iniciar jobs después de que el servidor esté listo y Mongo conectado
+    mongoose.connection.once('open', () => {
+        iniciarJobsAutomaticos();
+    });
 });
