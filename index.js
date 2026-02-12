@@ -125,13 +125,11 @@ const DescargaIPSchema = new mongoose.Schema({
     juegoId: { 
         type: mongoose.Schema.Types.ObjectId, 
         ref: 'Juego',
-        required: true,
-        index: true 
+        required: true
     },
     ip: { 
         type: String, 
-        required: true,
-        index: true 
+        required: true
     },
     contadorHoy: { 
         type: Number, 
@@ -144,7 +142,7 @@ const DescargaIPSchema = new mongoose.Schema({
     }
 });
 
-// Índice compuesto para búsquedas rápidas
+// Índice compuesto — cubre búsquedas por juegoId, por ip, y por ambos juntos
 DescargaIPSchema.index({ juegoId: 1, ip: 1 });
 
 const DescargaIP = mongoose.model('DescargaIP', DescargaIPSchema);
@@ -154,7 +152,6 @@ const JuegoSchema = new mongoose.Schema({
     usuario: { 
         type: String, 
         required: true,
-        index: true,
         trim: true,
         default: "Cloud User"
     },
@@ -180,14 +177,12 @@ const JuegoSchema = new mongoose.Schema({
     status: { 
         type: String, 
         enum: ["pendiente", "aprobado", "rechazado", "pending"],
-        default: "pendiente",
-        index: true 
+        default: "pendiente"
     },
     linkStatus: {
         type: String,
         enum: ["online", "revision", "caido"],
-        default: "online",
-        index: true
+        default: "online"
     },
     reportes: { 
         type: Number, 
@@ -201,21 +196,22 @@ const JuegoSchema = new mongoose.Schema({
     },
     tags: [String],
     
-    // ⭐ NUEVOS CAMPOS ECONÓMICOS
+    // ⭐ CAMPOS ECONÓMICOS
     descargasEfectivas: { 
         type: Number, 
         default: 0,
-        min: 0,
-        index: true // Para ordenar por popularidad
+        min: 0
     }
 }, { 
     timestamps: true
 });
 
+// Todos los índices declarados en un solo lugar (evita duplicados)
 JuegoSchema.index({ usuario: 1, status: 1 });
 JuegoSchema.index({ createdAt: -1 });
 JuegoSchema.index({ linkStatus: 1 });
-JuegoSchema.index({ descargasEfectivas: -1 }); // Para ranking
+JuegoSchema.index({ descargasEfectivas: -1 });
+JuegoSchema.index({ status: 1 });
 
 // Middleware para actualizar linkStatus automáticamente
 JuegoSchema.pre('save', function(next) {
