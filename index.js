@@ -1341,118 +1341,123 @@ app.post('/auth/login', [
  */
 app.get('/admin/stats/dashboard', async (req, res) => {
     try {
-        const hoy = new Date();
-        hoy.setHours(0, 0, 0, 0);
-        
-        const semanaAtras = new Date();
-        semanaAtras.setDate(semanaAtras.getDate() - 7);
-        semanaAtras.setHours(0, 0, 0, 0);
-        
+        const ahora = new Date();
+        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+        const semana = new Date(ahora.getTime() - 7 * 24 * 60 * 60 * 1000);
+
         const [
-            // Usuarios
             totalUsuarios,
             usuariosHoy,
             usuariosSemana,
-            usuariosVerificados,
             usuariosListaNegra,
-            
-            // Items/Juegos
+            usuariosVerificados,
             totalJuegos,
-            juegosAprobados,
             juegosPendientes,
+            juegosAprobados,
             juegosHoy,
-            
-            // Descargas
             totalDescargas,
             descargasHoy,
-            
-            // Finanzas
-            totalSaldos,
-            solicitudesPendientes,
-            
-            // Comentarios
+            saldoTotal,
+            saldoPendientePago,
             totalComentarios,
             comentariosHoy,
-            
-            // Links
-            linksEnRevision
+            linksEnRevision,
+            topUploaders,
+            itemsMasDescargados
         ] = await Promise.all([
             // Usuarios
             Usuario.countDocuments(),
             Usuario.countDocuments({ createdAt: { $gte: hoy } }),
-            Usuario.countDocuments({ createdAt: { $gte: semanaAtras } }),
+            Usuario.countDocuments({ createdAt: { $gte: semana } }),
+            Usuario.countDocuments({ listaNegraAdmin: true }),
             Usuario.countDocuments({ isVerificado: true }),
-            Usuario.countDocuments({ esListaNegra: true }),
             
-            // Items
+            // Items/Juegos
             Juego.countDocuments(),
+            Juego.countDocuments({ status: { $in: ['pendiente', 'pending'] } }),
             Juego.countDocuments({ status: 'aprobado' }),
-            Juego.countDocuments({ status: 'pendiente' }),
             Juego.countDocuments({ createdAt: { $gte: hoy } }),
             
             // Descargas
             Juego.aggregate([
                 { $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }
             ]),
-            Juego.aggregate([
-                { $match: { updatedAt: { $gte: hoy } } },
-                { $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }
-            ]),
+            DescargaIP.countDocuments({ fecha: { $gte: hoy } }),
             
             // Finanzas
             Usuario.aggregate([
                 { $group: { _id: null, total: { $sum: '$saldo' } } }
             ]),
-            SolicitudPago.countDocuments({ status: 'pendiente' }),
+            Pago.aggregate([
+                { $match: { estado: 'pendiente' } },
+                { $group: { _id: null, total: { $sum: '$monto' } } }
+            ]),
             
             // Comentarios
             Comentario.countDocuments(),
             Comentario.countDocuments({ fecha: { $gte: hoy } }),
             
             // Links
-            Juego.countDocuments({ linkStatus: 'revision' })
+            Juego.countDocuments({ linkStatus: 'revision' }),
+            
+            // Top Uploaders
+            Juego.aggregate([
+                { $match: { status: 'aprobado' } },
+                { $group: { 
+                    _id: '$usuario', 
+                    totalDescargas: { $sum: '$descargasEfectivas' }, 
+                    totalItems: { $sum: 1 } 
+                }},
+                { $sort: { totalDescargas: -1 } },
+                { $limit: 5 }
+            ]),
+            
+            // Items más descargados
+            Juego.find({ status: 'aprobado' })
+                .sort({ descargasEfectivas: -1 })
+                .limit(5)
+                .select('title usuario descargasEfectivas')
+                .lean()
         ]);
-        
-        // Calcular pendiente de pago
-        const solicitudesPago = await SolicitudPago.find({ status: 'pendiente' }).lean();
-        const pendienteDePago = solicitudesPago.reduce((sum, s) => sum + (s.monto || 0), 0);
-        
+
         res.json({
             success: true,
-            dashboard: { // ⭐ Cambiar de "stats" a "dashboard"
+            dashboard: {  // ⚡ IMPORTANTE: "dashboard" no "stats"
                 usuarios: {
                     total: totalUsuarios,
                     hoy: usuariosHoy,
                     semana: usuariosSemana,
-                    verificados: usuariosVerificados,
-                    listaNegra: usuariosListaNegra
+                    listaNegra: usuariosListaNegra,
+                    verificados: usuariosVerificados
                 },
-                items: {
+                items: {  // ⚡ IMPORTANTE: "items" no "juegos"
                     total: totalJuegos,
-                    aprobados: juegosAprobados,
                     pendientes: juegosPendientes,
+                    aprobados: juegosAprobados,
                     hoy: juegosHoy
                 },
                 descargas: {
                     total: totalDescargas[0]?.total || 0,
-                    hoy: descargasHoy[0]?.total || 0
+                    hoy: descargasHoy
                 },
                 finanzas: {
-                    saldoEnCirculacion: totalSaldos[0]?.total || 0,
-                    pendienteDePago: pendienteDePago
+                    saldoEnCirculacion: parseFloat((saldoTotal[0]?.total || 0).toFixed(2)),
+                    pendienteDePago: parseFloat((saldoPendientePago[0]?.total || 0).toFixed(2))
                 },
                 comentarios: {
                     total: totalComentarios,
                     hoy: comentariosHoy
                 },
-                linksEnRevision: linksEnRevision
+                linksEnRevision: linksEnRevision,
+                topUploaders: topUploaders,
+                itemsMasDescargados: itemsMasDescargados
             }
         });
-        
+
     } catch (error) {
         logger.error("❌ Error en dashboard:", error);
-        res.status(500).json({
-            success: false,
+        res.status(500).json({ 
+            success: false, 
             error: "Error al cargar dashboard",
             message: error.message
         });
