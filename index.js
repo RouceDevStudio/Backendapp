@@ -1341,61 +1341,123 @@ app.post('/auth/login', [
  */
 app.get('/admin/stats/dashboard', async (req, res) => {
     try {
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+        
+        const semanaAtras = new Date();
+        semanaAtras.setDate(semanaAtras.getDate() - 7);
+        semanaAtras.setHours(0, 0, 0, 0);
+        
         const [
+            // Usuarios
             totalUsuarios,
+            usuariosHoy,
+            usuariosSemana,
+            usuariosVerificados,
+            usuariosListaNegra,
+            
+            // Items/Juegos
             totalJuegos,
             juegosAprobados,
             juegosPendientes,
+            juegosHoy,
+            
+            // Descargas
             totalDescargas,
-            totalGanancias,
-            usuariosVerificados,
+            descargasHoy,
+            
+            // Finanzas
+            totalSaldos,
+            solicitudesPendientes,
+            
+            // Comentarios
+            totalComentarios,
+            comentariosHoy,
+            
+            // Links
             linksEnRevision
         ] = await Promise.all([
+            // Usuarios
             Usuario.countDocuments(),
+            Usuario.countDocuments({ createdAt: { $gte: hoy } }),
+            Usuario.countDocuments({ createdAt: { $gte: semanaAtras } }),
+            Usuario.countDocuments({ isVerificado: true }),
+            Usuario.countDocuments({ esListaNegra: true }),
+            
+            // Items
             Juego.countDocuments(),
             Juego.countDocuments({ status: 'aprobado' }),
             Juego.countDocuments({ status: 'pendiente' }),
+            Juego.countDocuments({ createdAt: { $gte: hoy } }),
+            
+            // Descargas
             Juego.aggregate([
                 { $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }
             ]),
+            Juego.aggregate([
+                { $match: { updatedAt: { $gte: hoy } } },
+                { $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }
+            ]),
+            
+            // Finanzas
             Usuario.aggregate([
                 { $group: { _id: null, total: { $sum: '$saldo' } } }
             ]),
-            Usuario.countDocuments({ isVerificado: true }),
+            SolicitudPago.countDocuments({ status: 'pendiente' }),
+            
+            // Comentarios
+            Comentario.countDocuments(),
+            Comentario.countDocuments({ fecha: { $gte: hoy } }),
+            
+            // Links
             Juego.countDocuments({ linkStatus: 'revision' })
         ]);
-
+        
+        // Calcular pendiente de pago
+        const solicitudesPago = await SolicitudPago.find({ status: 'pendiente' }).lean();
+        const pendienteDePago = solicitudesPago.reduce((sum, s) => sum + (s.monto || 0), 0);
+        
         res.json({
             success: true,
-            stats: {
+            dashboard: { // ⭐ Cambiar de "stats" a "dashboard"
                 usuarios: {
                     total: totalUsuarios,
-                    verificados: usuariosVerificados
+                    hoy: usuariosHoy,
+                    semana: usuariosSemana,
+                    verificados: usuariosVerificados,
+                    listaNegra: usuariosListaNegra
                 },
-                juegos: {
+                items: {
                     total: totalJuegos,
                     aprobados: juegosAprobados,
-                    pendientes: juegosPendientes
+                    pendientes: juegosPendientes,
+                    hoy: juegosHoy
                 },
                 descargas: {
-                    total: totalDescargas[0]?.total || 0
+                    total: totalDescargas[0]?.total || 0,
+                    hoy: descargasHoy[0]?.total || 0
                 },
-                economia: {
-                    totalGanancias: totalGanancias[0]?.total || 0,
-                    linksEnRevision
-                }
+                finanzas: {
+                    saldoEnCirculacion: totalSaldos[0]?.total || 0,
+                    pendienteDePago: pendienteDePago
+                },
+                comentarios: {
+                    total: totalComentarios,
+                    hoy: comentariosHoy
+                },
+                linksEnRevision: linksEnRevision
             }
         });
-
+        
     } catch (error) {
         logger.error("❌ Error en dashboard:", error);
-        res.status(500).json({ 
-            success: false, 
-            error: "Error al cargar dashboard" 
+        res.status(500).json({
+            success: false,
+            error: "Error al cargar dashboard",
+            message: error.message
         });
     }
 });
-
 /**
  * ⭐ Ajustar saldo manualmente - ADMIN
  */
