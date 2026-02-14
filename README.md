@@ -1,574 +1,434 @@
-# 📋 RESUMEN DE MEJORAS - UPGAMES BACKEND v3.0
+# 🎮 UpGames Backend v3.1.0
 
-## 🎯 OBJETIVO
-Integrar sistema completo de monetización y economía CPM sin eliminar funcionalidades existentes.
+Backend API completo para UpGames - Plataforma de juegos con sistema de economía CPM, detección de fraude y panel administrativo.
 
----
+## 🚀 Características Principales
 
-## ✅ NUEVOS SCHEMAS AGREGADOS
+### ✨ Sistema Económico CPM
+- **CPM de $2.00** por cada 1,000 descargas efectivas
+- **50% de ganancia** para el creador del juego
+- Umbral mínimo de **2,000 descargas** antes de generar ingresos
+- Retiro mínimo de **$10 USD**
+- Control de **2 descargas máximas por IP por día** (anti-bots)
 
-### 1. **DescargaIP** (Control Anti-Bots con TTL)
+### 🤖 6 JOBS AUTOMÁTICOS (CRON JOBS)
+1. **Auto-Ping (cada 14 min)** - Evita que Render duerma el servidor
+2. **Limpieza de Comentarios (cada 24h)** - Elimina vacíos y duplicados
+3. **Reset de Reportes (cada 12h)** - Resetea reportes de links online antiguos
+4. **Auto-Rechazo (cada 24h)** - Rechaza items pendientes de +7 días
+5. **Auto-Marcar Caídos (cada 6h)** - Marca links con +10 reportes y 72h sin revisión
+6. **Auto-Verificación (cada 6h)** - Asigna niveles por seguidores (100/500/1000+)
+
+### 🛡️ Detección Automática de Fraude
+- **6 tipos de fraude** detectados automáticamente:
+  - Velocidad anormal de descargas
+  - IP hopping (VPN abuse)
+  - Abuso desde una sola IP
+  - Patrones de bots
+  - Picos sospechosos de ganancias
+  - Tiempo entre descargas anormal
+- **Auto-bloqueo** de usuarios sospechosos
+- Panel de admin para revisar actividades
+
+### 📊 Panel de Administración Completo
+- Gestión de usuarios (verificación, lista negra, ajustes de saldo)
+- Gestión de juegos (aprobar, rechazar, marcar links caídos)
+- Sistema de pagos (solicitudes, procesamiento, historial)
+- Estadísticas en tiempo real
+- Monitoreo de fraude
+
+### 🔐 Seguridad
+- Rate limiting granular por endpoint
+- JWT con refresh tokens
+- Helmet.js para headers de seguridad
+- CORS configurado
+- Validación de inputs con express-validator
+- Logs profesionales con Winston
+
+## 📋 Requisitos
+
+- Node.js >= 18.0.0
+- MongoDB (Atlas recomendado)
+- Cuenta de PayPal (para pagos a creadores)
+
+## 🛠️ Instalación
+
+### 1. Clonar el proyecto
+```bash
+git clone <tu-repo>
+cd backend-optimizado
+```
+
+### 2. Instalar dependencias
+```bash
+npm install
+```
+
+### 3. Configurar variables de entorno
+```bash
+cp .env.example .env
+```
+
+Edita el archivo `.env` con tus valores:
+```env
+MONGODB_URI=mongodb+srv://usuario:password@cluster.mongodb.net/upgames
+JWT_SECRET=tu_secret_super_seguro
+JWT_REFRESH_SECRET=otro_secret_diferente
+NODE_ENV=production
+PORT=10000
+```
+
+### 4. Iniciar el servidor
+
+**Desarrollo:**
+```bash
+npm run dev
+```
+
+**Producción:**
+```bash
+npm start
+```
+
+## 📡 Endpoints Principales
+
+### 🔐 Autenticación
+```
+POST   /auth/register          - Registrar usuario
+POST   /auth/login             - Iniciar sesión
+GET    /auth/users             - Listar usuarios
+```
+
+### 💰 Economía (Usuario)
+```
+POST   /economia/validar-descarga      - Validar y contar descarga
+POST   /economia/solicitar-pago        - Solicitar retiro ($10 min)
+GET    /economia/mi-saldo              - Consultar saldo y stats
+PUT    /economia/actualizar-paypal     - Configurar email PayPal
+```
+
+### 📦 Items/Juegos
+```
+GET    /items                  - Listar juegos aprobados
+GET    /items/:id              - Obtener juego específico
+GET    /items/user/:usuario    - Juegos de un usuario
+POST   /items/add              - Agregar nuevo juego
+PUT    /items/report/:id       - Reportar link caído
+DELETE /items/:id              - Eliminar juego
+```
+
+### 👥 Usuarios Públicos
+```
+GET    /usuarios/perfil-publico/:usuario       - Ver perfil público
+PUT    /usuarios/toggle-seguir/:actual/:objetivo - Seguir/dejar de seguir
+PUT    /usuarios/update-avatar                 - Actualizar avatar
+PUT    /usuarios/update-bio                    - Actualizar biografía
+GET    /usuarios/stats-seguimiento/:usuario    - Stats de seguidores
+```
+
+### 💬 Comentarios
+```
+GET    /comentarios/:itemId    - Comentarios de un item
+POST   /comentarios            - Agregar comentario
+DELETE /comentarios/:id        - Eliminar comentario
+```
+
+### ⭐ Favoritos
+```
+POST   /favoritos/add          - Agregar a favoritos
+DELETE /favoritos/remove       - Quitar de favoritos
+GET    /favoritos/:usuario     - Listar favoritos
+```
+
+### 🔧 Admin - Finanzas
+```
+GET    /admin/finanzas/solicitudes-pendientes  - Solicitudes de pago
+POST   /admin/finanzas/procesar-pago/:id       - Aprobar pago
+POST   /admin/finanzas/rechazar-pago/:id       - Rechazar pago
+GET    /admin/finanzas/historial               - Historial de pagos
+GET    /admin/finanzas/estadisticas            - Stats financieras
+GET    /admin/payments-pending                 - Usuarios elegibles
+```
+
+### 🔧 Admin - Usuarios
+```
+GET    /admin/users/detalle/:id           - Detalle completo
+PUT    /admin/users/lista-negra/:id       - Agregar/quitar lista negra
+PUT    /admin/users/notas/:id             - Agregar notas admin
+PUT    /admin/users/ajustar-saldo/:id     - Ajustar saldo manualmente
+DELETE /admin/users/:id/items             - Eliminar todos sus items
+PUT    /admin/users/:id/reset-saldo       - Resetear saldo
+GET    /admin/users/lista-negra           - Listar usuarios bloqueados
+```
+
+### 🔧 Admin - Items
+```
+GET    /admin/items                       - Listar todos los items
+PUT    /admin/items/:id                   - Actualizar item
+PUT    /admin/items/bulk-action           - Acciones en lote
+PUT    /admin/items/:id/reset-reports     - Resetear reportes
+PUT    /admin/items/:id/link-status       - Cambiar estado link
+GET    /admin/links/en-revision           - Links reportados
+PUT    /admin/links/marcar-caido/:id      - Marcar como caído
+```
+
+### 🔧 Admin - Estadísticas
+```
+GET    /admin/stats/dashboard             - Dashboard general
+GET    /admin/stats/top-usuarios          - Top 20 por descargas
+```
+
+### 🚨 Admin - Detección de Fraude
+```
+GET    /admin/fraud/suspicious-activities - Actividades sospechosas
+PUT    /admin/fraud/mark-reviewed/:id     - Marcar como revisado
+GET    /admin/fraud/user-history/:usuario - Historial de fraude
+```
+
+### 🏥 Sistema
+```
+GET    /health                - Healthcheck del servidor
+GET    /api/version           - Versión de la API
+GET    /                      - Info general
+```
+
+## 🎯 Flujo de Descarga y Ganancia
+
+1. Usuario hace clic en "Descargar juego"
+2. Frontend llama a `POST /economia/validar-descarga`
+3. Backend verifica:
+   - ✅ Juego existe y está aprobado
+   - ✅ IP no ha excedido límite diario (2/día)
+   - ✅ Incrementa contador de descargas efectivas
+   - ✅ Si autor está en lista negra → NO genera ganancia
+   - ✅ Si descargas > 2,000 y autor verificado:
+     - 💰 Calcula ganancia: `($2.00 * 0.50) / 1000 = $0.001 por descarga`
+     - 🔍 Ejecuta análisis de fraude
+     - 🚫 Si fraude crítico → auto-bloquea y revierte ganancia
+   - ✅ Actualiza saldo del autor
+4. Devuelve link de descarga
+
+## 🛡️ Sistema de Detección de Fraude
+
+### Umbrales de Detección
+```javascript
+MAX_DOWNLOADS_PER_MINUTE: 10
+MAX_DOWNLOADS_PER_HOUR: 100
+MAX_DOWNLOADS_PER_DAY: 500
+MAX_IPS_PER_USER_PER_HOUR: 5
+MAX_DOWNLOADS_FROM_SINGLE_IP: 50
+MIN_SECONDS_BETWEEN_DOWNLOADS: 3
+MAX_EARNINGS_PER_HOUR: $0.50
+```
+
+### Niveles de Severidad
+- **Low** - Advertencia
+- **Medium** - Requiere revisión
+- **High** - Sospechoso
+- **Critical** - Auto-bloqueo automático
+
+### ¿Qué pasa cuando se detecta fraude?
+1. Se registra la actividad sospechosa en la base de datos
+2. Si severidad es **critical** o **high** con auto-flag:
+   - Usuario se marca automáticamente en lista negra
+   - Se revierte la ganancia de esa descarga
+   - Se agrega nota automática en el perfil
+3. Admin puede revisar en `/admin/fraud/suspicious-activities`
+
+## 📊 Schemas de Base de Datos
+
+### Usuario
 ```javascript
 {
-  juegoId: ObjectId,
-  ip: String,
-  contadorHoy: Number (default: 1),
-  fecha: Date (expires: 86400 segundos = 24h auto-delete)
+  usuario: String (único),
+  email: String (único),
+  password: String (hasheado),
+  paypalEmail: String,
+  saldo: Number,
+  descargasTotales: Number,
+  isVerificado: Boolean,
+  verificadoNivel: Number (0-3),
+  listaNegraAdmin: Boolean,
+  notasAdmin: String,
+  avatar: String,
+  bio: String,
+  listaSeguidores: [String],
+  siguiendo: [String]
 }
 ```
-**Función:** Controlar máximo 2 descargas efectivas por IP por día por juego. Se auto-elimina después de 24h.
 
-### 2. **Pago** (Historial de Pagos)
+### Juego
+```javascript
+{
+  usuario: String,
+  title: String,
+  description: String,
+  image: String,
+  link: String,
+  status: String (pendiente|aprobado|rechazado),
+  linkStatus: String (online|revision|caido),
+  reportes: Number,
+  category: String,
+  tags: [String],
+  descargasEfectivas: Number
+}
+```
+
+### Pago
 ```javascript
 {
   usuario: String,
   monto: Number,
   paypalEmail: String,
-  estado: ['pendiente', 'procesado', 'completado', 'rechazado'],
-  fecha: Date,
-  notas: String
+  estado: String (pendiente|procesado|completado|rechazado),
+  notas: String,
+  fecha: Date
 }
 ```
-**Función:** Registro completo de solicitudes de pago para transparencia y control admin.
 
----
-
-## 🔧 CAMPOS AGREGADOS A SCHEMAS EXISTENTES
-
-### **JuegoSchema** - Nuevos campos:
+### DescargaIP (TTL 24h)
 ```javascript
-descargasEfectivas: Number (default: 0, index: true)
+{
+  juegoId: ObjectId,
+  ip: String,
+  contadorHoy: Number,
+  fecha: Date (auto-elimina después de 24h)
+}
 ```
-**Nota:** Los campos anteriores (linkStatus, reportes, etc.) se MANTIENEN intactos.
 
-### **UsuarioSchema** - Nuevos campos:
+### SuspiciousActivity
 ```javascript
-isVerificado: Boolean (default: false)
-solicitudPagoPendiente: Boolean (default: false)
-```
-**Nota:** Todos los campos anteriores (email, paypalEmail, saldo, descargasTotales) ya estaban y se MANTIENEN.
-
-**Middleware agregado:**
-```javascript
-UsuarioSchema.pre('save', function(next) {
-    if (this.verificadoNivel >= 1 && !this.isVerificado) {
-        this.isVerificado = true;
-    }
-    next();
-});
-```
-
----
-
-## 🆕 NUEVAS RUTAS - SISTEMA DE ECONOMÍA
-
-### **Validación de Descargas** (Usuario)
-
-#### `POST /economia/validar-descarga`
-**Descripción:** Endpoint crítico llamado desde puente.html después de 30 segundos.
-
-**Body:**
-```json
 {
-  "juegoId": "mongoId"
+  usuario: String,
+  tipo: String,
+  severidad: String,
+  detalles: Object,
+  autoMarcado: Boolean,
+  revisado: Boolean,
+  notasAdmin: String,
+  fecha: Date
 }
 ```
 
-**Lógica:**
-1. Obtiene IP real del usuario
-2. Verifica que el juego exista y esté aprobado
-3. Verifica límite de 2 descargas por IP por día
-4. Incrementa `descargasEfectivas` del juego
-5. Si juego > 2,000 descargas Y autor verificado (nivel 1+):
-   - Calcula ganancia: ($2.00 * 50%) / 1,000 = $0.001 USD
-   - Suma al saldo del autor
-6. Actualiza `descargasTotales` del autor
+## 🔧 Configuración Avanzada
 
-**Response exitoso:**
-```json
-{
-  "success": true,
-  "descargaContada": true,
-  "enlace": "https://mega.nz/...",
-  "descargasEfectivas": 2150,
-  "mensaje": "Descarga válida y contada"
-}
-```
-
-**Response límite alcanzado:**
-```json
-{
-  "success": true,
-  "limiteAlcanzado": true,
-  "mensaje": "Has alcanzado el límite de descargas para hoy",
-  "enlace": "https://mega.nz/..."
-}
-```
-
----
-
-#### `GET /economia/mi-saldo` 🔐 (requiere JWT)
-**Descripción:** Obtiene datos económicos del usuario logueado.
-
-**Response:**
-```json
-{
-  "success": true,
-  "saldo": 15.43,
-  "descargasTotales": 15430,
-  "paypalEmail": "user@paypal.com",
-  "isVerificado": true,
-  "verificadoNivel": 2,
-  "solicitudPagoPendiente": false,
-  "juegosElegibles": 3,
-  "puedeRetirar": true,
-  "minRetiro": 10,
-  "requisitos": {
-    "saldoMinimo": 10,
-    "verificacionNecesaria": 1,
-    "descargasMinimas": 2000
-  }
-}
-```
-
----
-
-#### `POST /economia/solicitar-pago` 🔐 (requiere JWT)
-**Descripción:** Usuario solicita retiro de su saldo.
-
-**Requisitos:**
-- Saldo >= $10 USD
-- Usuario verificado (nivel 1+)
-- PayPal configurado
-- Al menos 1 juego con > 2,000 descargas
-- No tener solicitud pendiente
-
-**Response:**
-```json
-{
-  "success": true,
-  "mensaje": "Solicitud de pago enviada. El administrador la revisará pronto.",
-  "solicitud": {
-    "monto": 15.43,
-    "paypalEmail": "user@paypal.com",
-    "fecha": "2026-02-10T..."
-  }
-}
-```
-
----
-
-#### `PUT /economia/actualizar-paypal` 🔐 (requiere JWT)
-**Body:**
-```json
-{
-  "paypalEmail": "mipaypal@email.com"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "mensaje": "Email de PayPal actualizado correctamente",
-  "paypalEmail": "mipaypal@email.com"
-}
-```
-
----
-
-## 🔐 NUEVAS RUTAS - PANEL ADMIN FINANZAS
-
-### **Gestión de Pagos**
-
-#### `GET /admin/finanzas/solicitudes-pendientes`
-**Descripción:** Obtiene todas las solicitudes de pago pendientes con datos enriquecidos.
-
-**Response:**
-```json
-{
-  "success": true,
-  "solicitudes": [
-    {
-      "_id": "...",
-      "usuario": "developer123",
-      "monto": 25.50,
-      "paypalEmail": "dev@paypal.com",
-      "estado": "pendiente",
-      "fecha": "2026-02-10T...",
-      "datosUsuario": {
-        "email": "dev@gmail.com",
-        "verificadoNivel": 2,
-        "isVerificado": true,
-        "descargasTotales": 25500,
-        "juegosElegibles": 5
-      }
-    }
-  ],
-  "total": 1
-}
-```
-
----
-
-#### `POST /admin/finanzas/procesar-pago/:id`
-**Descripción:** Marca pago como completado y resta saldo del usuario.
-
-**Body (opcional):**
-```json
-{
-  "notas": "Pago procesado vía PayPal ID: XYZ123"
-}
-```
-
-**Lógica:**
-1. Actualiza estado del pago a 'completado'
-2. Resta el monto del saldo del usuario
-3. Quita flag `solicitudPagoPendiente`
-
----
-
-#### `POST /admin/finanzas/rechazar-pago/:id`
-**Body (opcional):**
-```json
-{
-  "motivo": "PayPal inválido o cuenta suspendida"
-}
-```
-
-**Lógica:**
-1. Actualiza estado a 'rechazado'
-2. Quita flag `solicitudPagoPendiente`
-3. El saldo permanece intacto
-
----
-
-#### `GET /admin/finanzas/historial`
-**Query params:**
-- `estado`: pendiente | completado | rechazado
-- `usuario`: nombre de usuario
-- `limite`: número máximo de resultados (default: 50)
-
-**Ejemplo:** `/admin/finanzas/historial?estado=completado&limite=100`
-
----
-
-#### `GET /admin/finanzas/estadisticas`
-**Response:**
-```json
-{
-  "success": true,
-  "estadisticas": {
-    "solicitudesPendientes": 3,
-    "totalSolicitado": 75.20,
-    "totalPagado": 450.00,
-    "usuariosConSaldo": 125,
-    "usuariosVerificados": 45
-  }
-}
-```
-
----
-
-### **Gestión de Links**
-
-#### `GET /admin/links/en-revision`
-**Descripción:** Obtiene juegos con linkStatus = 'revision' (reportados 3+ veces).
-
----
-
-#### `PUT /admin/links/marcar-caido/:id`
-**Descripción:** Marca un link como caído. El juego no se mostrará en biblioteca.
-
----
-
-## 🔄 RUTAS MODIFICADAS (COMPATIBILIDAD MANTENIDA)
-
-### `POST /auth/register`
-**Ahora requiere 3 campos obligatorios:**
-```json
-{
-  "usuario": "developer123",
-  "email": "dev@gmail.com",
-  "password": "securepass123"
-}
-```
-
-**Validaciones:**
-- Usuario: 3-20 caracteres, único, lowercase
-- Email: válido, único, lowercase
-- Password: mínimo 6 caracteres
-
-**Response incluye más datos:**
-```json
-{
-  "success": true,
-  "ok": true,
-  "token": "jwt_token...",
-  "usuario": "developer123",
-  "email": "dev@gmail.com",
-  "datosUsuario": {
-    "usuario": "developer123",
-    "email": "dev@gmail.com",
-    "verificadoNivel": 0,
-    "isVerificado": false
-  }
-}
-```
-
----
-
-### `POST /auth/login`
-**AHORA ACEPTA LOGIN DUAL:**
-- Puede enviar email O nombre de usuario en el campo `usuario`
-
-**Body:**
-```json
-{
-  "usuario": "developer123",  // ← Puede ser email o nombre
-  "password": "securepass123"
-}
-```
-
-**Búsqueda:**
-```javascript
-$or: [
-  { usuario: identificador.toLowerCase() },
-  { email: identificador.toLowerCase() }
-]
-```
-
----
-
-### `GET /items`
-**Ahora filtra links caídos automáticamente:**
-```javascript
-filtro = { 
-  status: 'aprobado',
-  linkStatus: { $ne: 'caido' }  // ← NUEVO
-}
-```
-
----
-
-### `GET /usuarios/perfil-publico/:usuario`
-**Ahora NO expone datos sensibles:**
-```javascript
-.select('-password -paypalEmail')  // ← Email de PayPal es privado
-```
-
----
-
-## 🔒 CONSTANTES DE ECONOMÍA (Configurables)
+### config.js
+Todos los valores configurables están centralizados en `config.js`:
 
 ```javascript
-const CPM_VALUE = 2.00;                    // $2.00 por 1,000 descargas
-const AUTHOR_PERCENTAGE = 0.50;            // 50% para el autor
-const MIN_DOWNLOADS_TO_EARN = 2000;        // Umbral para empezar a ganar
-const MIN_WITHDRAWAL = 10;                 // Mínimo $10 USD para retiro
-const MAX_DOWNLOADS_PER_IP_PER_DAY = 2;    // Límite anti-bots
+CPM_VALUE: 2.00                    // $2 por 1,000 descargas
+AUTHOR_PERCENTAGE: 0.50            // 50% para el creador
+MIN_DOWNLOADS_TO_EARN: 2000        // Umbral mínimo
+MIN_WITHDRAWAL: 10                 // Retiro mínimo $10
+MAX_DOWNLOADS_PER_IP_PER_DAY: 2    // Límite anti-bots
 ```
 
-**Ganancia por descarga:**
-```
-($2.00 * 50%) / 1,000 = $0.001 USD por descarga efectiva
-```
-
----
-
-## 🛡️ SEGURIDAD MEJORADA
-
-### **Rate Limiters Agregados:**
+### Habilitar/Deshabilitar Features
 ```javascript
-downloadValidationLimiter: {
-  windowMs: 60 * 1000,     // 1 minuto
-  max: 10                  // Máx 10 validaciones/min
+FEATURES: {
+    ENABLE_FRAUD_DETECTION: true,
+    ENABLE_AUTO_PAYMENTS: false,        // PayPal API
+    ENABLE_EMAIL_NOTIFICATIONS: false   // SendGrid/Nodemailer
 }
 ```
 
-### **Middleware JWT mejorado:**
-- Ahora guarda `req.usuario` y `req.userTokenData`
-- Token incluye `usuario` y `email`
+## 🚀 Despliegue en Producción
 
-### **Validaciones robustas:**
-- express-validator en TODOS los endpoints críticos
-- Verificación de ObjectId válidos
-- Sanitización de emails (normalizeEmail)
+### Render.com (Recomendado)
+1. Conecta tu repositorio de GitHub
+2. Configura las variables de entorno
+3. Build Command: `npm install`
+4. Start Command: `npm start`
 
----
-
-## 🔄 RUTAS LEGACY MANTENIDAS
-
-Para compatibilidad con tu frontend existente:
-
-1. **`PUT /usuarios/configurar-paypal`** → Redirige a nueva lógica
-2. **`POST /items/verify-download/:id`** → Marca como deprecada, sugiere nueva
-
----
-
-## 📊 LOGS MEJORADOS
-
-Ahora el servidor registra:
+### Variables de Entorno Requeridas
 ```
-✅ [POST] /economia/validar-descarga - 200 (45ms)
-📥 Validación de descarga - Juego: 507f1f77..., IP: 192.168.1.1
-💰 Ganancia generada - Autor: @developer123, +$0.0010 USD
-✅ Descarga efectiva validada - Juego: Super Mario 64, Total: 2150
-```
-
----
-
-## 🚀 HEALTHCHECK ACTUALIZADO
-
-`GET /` ahora responde con:
-```json
-{
-  "status": "UP",
-  "version": "3.0 - ECONOMÍA UPGAMES COMPLETA",
-  "timestamp": "2026-02-10T15:30:00.000Z",
-  "features": [
-    "Sistema de economía CPM ($2.00/1000 descargas)",
-    "Control de IPs anti-bots (TTL 24h)",
-    "Login dual (usuario/email)",
-    "Pagos PayPal automatizados",
-    "Panel Admin de Finanzas completo",
-    "Sistema de links caídos",
-    "Verificación de usuarios multi-nivel"
-  ]
-}
-```
-
----
-
-## 📦 DEPENDENCIAS (sin cambios)
-
-Tu `package.json` ya tiene todo lo necesario:
-```json
-{
-  "express": "^4.x",
-  "mongoose": "^7.x",
-  "bcryptjs": "^2.x",
-  "jsonwebtoken": "^9.x",
-  "express-validator": "^7.x",
-  "express-rate-limit": "^6.x",
-  "helmet": "^7.x",
-  "cors": "^2.x",
-  "dotenv": "^16.x"
-}
-```
-
----
-
-## ⚙️ VARIABLES DE ENTORNO (.env)
-
-```env
 MONGODB_URI=mongodb+srv://...
-JWT_SECRET=tu_secret_key_segura_aqui
+JWT_SECRET=...
+JWT_REFRESH_SECRET=...
 NODE_ENV=production
 PORT=10000
 ```
 
----
+### Heroku
+```bash
+heroku create upgames-backend
+heroku config:set MONGODB_URI=...
+heroku config:set JWT_SECRET=...
+git push heroku main
+```
 
-## 🎨 FRONTEND - INTEGRACION
+## 📈 Monitoreo y Logs
 
-### **Para validar descarga (puente.html):**
+### Winston Logger
+Logs estructurados en `logs/app.log`:
+```
+✅ [GET] /items - 200 (45ms)
+❌ [POST] /economia/validar-descarga - 404 (12ms)
+💰 Ganancia generada - Autor: @usuario, +$0.0010 USD
+🚫 Usuario auto-marcado - @fraudster
+```
+
+### Healthcheck
+```bash
+curl https://tu-backend.com/health
+```
+
+## 🐛 Debugging
+
+### Logs en desarrollo
+```bash
+npm run dev
+```
+
+### Verificar MongoDB
 ```javascript
-// Después de esperar 30 segundos
-const response = await fetch('https://tu-backend.com/economia/validar-descarga', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ juegoId: '507f1f77bcf86cd799439011' })
-});
-
-const data = await response.json();
-if (data.success) {
-  if (data.limiteAlcanzado) {
-    alert(data.mensaje);
-  }
-  window.location.href = data.enlace;
-}
+// En la consola de MongoDB
+use upgames
+db.usuarios.find().pretty()
+db.juegos.find({ status: 'aprobado' }).count()
 ```
 
-### **Para ver saldo (mi-economia.html):**
-```javascript
-const token = localStorage.getItem('token');
-const response = await fetch('https://tu-backend.com/economia/mi-saldo', {
-  headers: { 'Authorization': `Bearer ${token}` }
-});
-const data = await response.json();
-console.log('Saldo:', data.saldo);
-```
+## ❓ FAQ
+
+**Q: ¿Cómo cambio el CPM o el porcentaje del autor?**  
+A: Edita `config.js` y cambia `CPM_VALUE` y `AUTHOR_PERCENTAGE`
+
+**Q: ¿Cómo agrego un admin?**  
+A: Actualiza manualmente en MongoDB: `db.usuarios.updateOne({usuario: "admin"}, {$set: {verificadoNivel: 3}})`
+
+**Q: ¿Los endpoints de admin requieren autenticación?**  
+A: No, según tu solicitud. Para agregar auth, usa el middleware `verificarToken` en cada ruta admin.
+
+**Q: ¿Puedo desactivar la detección de fraude?**  
+A: Sí, en `config.js` cambia `ENABLE_FRAUD_DETECTION: false`
+
+**Q: ¿Cómo proceso pagos reales de PayPal?**  
+A: Necesitas integrar la PayPal API. Por ahora el sistema solo crea solicitudes que debes procesar manualmente.
+
+## 📝 Changelog
+
+### v3.1.0 (Actual)
+- ✅ Sistema económico CPM completo
+- ✅ Detección automática de fraude
+- ✅ Panel admin de finanzas
+- ✅ Sistema de pagos
+- ✅ Gestión de lista negra
+- ✅ 51 endpoints funcionales
+- ✅ Logs profesionales con Winston
+- ✅ Arquitectura modular
+
+## 📄 Licencia
+
+MIT License - Jhonatan David Castro Galviz (@RouceDev)
+
+## 🤝 Contribuir
+
+Pull requests son bienvenidos. Para cambios importantes, abre un issue primero.
+
+## 📞 Soporte
+
+Para reportar bugs o solicitar features, abre un issue en GitHub.
 
 ---
 
-## 🔍 TESTING SUGERIDO
-
-### **1. Registro con email:**
-```bash
-POST /auth/register
-{
-  "usuario": "testuser",
-  "email": "test@test.com",
-  "password": "123456"
-}
-```
-
-### **2. Login con email:**
-```bash
-POST /auth/login
-{
-  "usuario": "test@test.com",  # ← Usando email
-  "password": "123456"
-}
-```
-
-### **3. Validar descarga:**
-```bash
-POST /economia/validar-descarga
-{
-  "juegoId": "507f1f77bcf86cd799439011"
-}
-```
-
-### **4. Ver saldo:**
-```bash
-GET /economia/mi-saldo
-Authorization: Bearer tu_token_jwt
-```
-
----
-
-## 🎯 PRÓXIMOS PASOS
-
-1. **Reemplazar tu index.js** actual con `index-upgraded.js`
-2. **Reiniciar servidor** para aplicar cambios en schemas
-3. **Frontend:** Actualizar formulario de registro para incluir email
-4. **Frontend:** Crear página puente.html que llame a `/economia/validar-descarga`
-5. **Frontend:** Crear/actualizar mi-economia.html para mostrar saldo
-6. **Admin:** Crear panel para `/admin/finanzas/*` endpoints
-
----
-
-## ⚠️ NOTAS IMPORTANTES
-
-- ✅ **TODAS tus rutas actuales siguen funcionando**
-- ✅ **TODOS tus schemas mantienen sus campos originales**
-- ✅ Se agregaron NUEVOS campos sin eliminar existentes
-- ✅ Login dual es compatible con frontend actual
-- ✅ Sistema de economía es automático (no requiere intervención manual)
-
----
-
-## 📞 SOPORTE
-
-Si tienes dudas sobre alguna funcionalidad nueva, revisa:
-1. Los comentarios con ⭐ en el código
-2. Las secciones de este documento
-3. Los ejemplos de request/response
-
----
-
-**Versión:** 3.0 - ECONOMÍA UPGAMES COMPLETA
-**Fecha:** Febrero 2026
-**Autor:** Sistema de Integración Automática
+**Desarrollado con ❤️ por @RouceDev**

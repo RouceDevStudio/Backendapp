@@ -8,7 +8,9 @@ const { body, validationResult, param } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 
-// ⚠️ NUEVO: Módulo de detección de fraude
+// ⚠️ Módulos personalizados
+const config = require('./config');
+const logger = require('./logger');
 const fraudDetector = require('./fraudDetector');
 
 const app = express();
@@ -30,10 +32,10 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+        if (!origin || allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(null, true); // En producción cambiar a: callback(new Error('CORS no permitido'))
+            callback(new Error('Acceso CORS no permitido desde este origen'));
         }
     },
     credentials: true
@@ -67,10 +69,9 @@ const createLimiter = rateLimit({
     skip: () => process.env.NODE_ENV === 'development'
 });
 
-// ⭐ NUEVO: Rate limiter específico para validación de descargas (anti-bots)
 const downloadValidationLimiter = rateLimit({
-    windowMs: 60 * 1000, // 1 minuto
-    max: 10, // Máximo 10 validaciones por minuto por IP
+    windowMs: 60 * 1000,
+    max: 10,
     message: { error: "Demasiadas validaciones de descarga. Espera un minuto." },
     skip: () => process.env.NODE_ENV === 'development'
 });
@@ -88,7 +89,7 @@ app.use((req, res, next) => {
     res.on('finish', () => {
         const duration = Date.now() - start;
         const status = res.statusCode >= 400 ? '❌' : '✅';
-        console.log(`${status} [${req.method}] ${req.path} - ${res.statusCode} (${duration}ms)`);
+        logger.info(`${status} [${req.method}] ${req.path} - ${res.statusCode} (${duration}ms)`);
     });
     next();
 });
@@ -98,24 +99,24 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_SECRET  = process.env.JWT_SECRET;
 
 if (!MONGODB_URI || !JWT_SECRET) {
-    console.error("❌ FALTAN VARIABLES DE ENTORNO: MONGODB_URI y JWT_SECRET son obligatorias.");
+    logger.error("❌ FALTAN VARIABLES DE ENTORNO: MONGODB_URI y JWT_SECRET son obligatorias.");
     process.exit(1);
 }
 
 mongoose.connect(MONGODB_URI, {
-    maxPoolSize: 5,           // Reducido de 10 → ahorra ~50-80MB de RAM en plan gratuito
+    maxPoolSize: 5,
     minPoolSize: 1,
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
 })
-.then(() => console.log("🚀 MONGODB CONECTADO EXITOSAMENTE"))
+.then(() => logger.info("🚀 MONGODB CONECTADO EXITOSAMENTE"))
 .catch(err => {
-    console.error("❌ ERROR CONEXIÓN MONGODB:", err.message);
+    logger.error("❌ ERROR CONEXIÓN MONGODB:", err.message);
     process.exit(1);
 });
 
 mongoose.connection.on('disconnected', () => {
-    console.warn('⚠️ MongoDB desconectado. Intentando reconectar...');
+    logger.warn('⚠️ MongoDB desconectado. Intentando reconectar...');
 });
 
 // ========== SCHEMAS ==========
@@ -138,13 +139,11 @@ const DescargaIPSchema = new mongoose.Schema({
     fecha: { 
         type: Date, 
         default: Date.now,
-        expires: 86400 // TTL: Se auto-elimina después de 24 horas (86400 segundos)
+        expires: 86400
     }
 });
 
-// Índice compuesto — cubre búsquedas por juegoId, por ip, y por ambos juntos
 DescargaIPSchema.index({ juegoId: 1, ip: 1 });
-
 const DescargaIP = mongoose.model('DescargaIP', DescargaIPSchema);
 
 // ⭐ SCHEMA: Juegos (CON ECONOMÍA COMPLETA)
@@ -195,8 +194,6 @@ const JuegoSchema = new mongoose.Schema({
         trim: true
     },
     tags: [String],
-    
-    // ⭐ CAMPOS ECONÓMICOS
     descargasEfectivas: { 
         type: Number, 
         default: 0,
@@ -206,14 +203,12 @@ const JuegoSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// Todos los índices declarados en un solo lugar (evita duplicados)
 JuegoSchema.index({ usuario: 1, status: 1 });
 JuegoSchema.index({ createdAt: -1 });
 JuegoSchema.index({ linkStatus: 1 });
 JuegoSchema.index({ descargasEfectivas: -1 });
 JuegoSchema.index({ status: 1 });
 
-// Middleware para actualizar linkStatus automáticamente
 JuegoSchema.pre('save', function(next) {
     if (this.reportes >= 3) {
         this.linkStatus = 'revision';
@@ -235,7 +230,6 @@ const UsuarioSchema = new mongoose.Schema({
         trim: true,
         lowercase: true
     },
-    // ⭐ Email (obligatorio para registro y login alternativo)
     email: {
         type: String,
         required: true,
@@ -250,7 +244,6 @@ const UsuarioSchema = new mongoose.Schema({
         required: true,
         minlength: 6
     },
-    // ⭐ Email de PayPal para pagos
     paypalEmail: {
         type: String,
         default: '',
@@ -258,25 +251,21 @@ const UsuarioSchema = new mongoose.Schema({
         trim: true,
         match: [/^(\S+@\S+\.\S+)?$/, 'Email de PayPal inválido']
     },
-    // ⭐ Saldo en USD
     saldo: {
         type: Number,
         default: 0,
         min: 0
     },
-    // ⭐ Historial de descargas totales de TODOS sus juegos
     descargasTotales: {
         type: Number,
         default: 0,
         min: 0
     },
-    // ⭐ Verificación obligatoria para cobrar
     isVerificado: {
         type: Boolean,
         default: false,
         index: true
     },
-    // ⭐ Solicitudes de pago pendientes
     solicitudPagoPendiente: {
         type: Boolean,
         default: false
@@ -307,24 +296,20 @@ const UsuarioSchema = new mongoose.Schema({
         type: Date, 
         default: Date.now 
     },
-    // ⭐ IP de registro (capturada al hacer register)
     registrationIP: {
         type: String,
         default: ''
     },
-    // ⭐ LISTA NEGRA ADMIN (solo visible en panel de admin)
     listaNegraAdmin: {
         type: Boolean,
         default: false,
         index: true
     },
-    // ⭐ Notas privadas de admin sobre el usuario
     notasAdmin: {
         type: String,
         default: '',
         maxlength: 500
     },
-    // ⭐ Fecha en que fue agregado a lista negra
     fechaListaNegra: {
         type: Date,
         default: null
@@ -334,7 +319,20 @@ const UsuarioSchema = new mongoose.Schema({
     timestamps: true
 });
 
-// ⭐ Middleware: Auto-verificar si tiene nivel 1+ (solo si no está verificado)
+const RefreshTokenSchema = new mongoose.Schema({
+    usuario: { type: String, required: true, index: true },
+    token: { type: String, required: true, unique: true },
+    expira: { 
+        type: Date, 
+        required: true, 
+        index: true, 
+        expires: 0 
+    },
+    creado: { type: Date, default: Date.now }
+});
+
+const RefreshToken = mongoose.model('RefreshToken', RefreshTokenSchema);
+
 UsuarioSchema.pre('save', function(next) {
     if (this.verificadoNivel >= 1 && !this.isVerificado) {
         this.isVerificado = true;
@@ -344,7 +342,7 @@ UsuarioSchema.pre('save', function(next) {
 
 const Usuario = mongoose.model('Usuario', UsuarioSchema);
 
-// ⭐ SCHEMA: Historial de Pagos (para admin y transparencia)
+// ⭐ SCHEMA: Historial de Pagos
 const PagoSchema = new mongoose.Schema({
     usuario: {
         type: String,
@@ -413,21 +411,44 @@ const verificarToken = (req, res, next) => {
     }
 };
 
+// ========== FUNCIONES AUXILIARES JWT ==========
+const generarTokens = (usuario) => {
+    const accessToken = jwt.sign(
+        { usuario },
+        JWT_SECRET,
+        { expiresIn: config.JWT_ACCESS_EXPIRATION }
+    );
+    
+    const refreshToken = jwt.sign(
+        { usuario },
+        config.JWT_REFRESH_SECRET,
+        { expiresIn: config.JWT_REFRESH_EXPIRATION }
+    );
+    
+    return { accessToken, refreshToken };
+};
+
+const verificarJWT = (token) => {
+    try {
+        return jwt.verify(token, JWT_SECRET);
+    } catch (error) {
+        throw new Error('Token inválido');
+    }
+};
+
 // ==========================================
 // ⭐⭐⭐ RUTAS DE ECONOMÍA (CORAZÓN DEL SISTEMA)
 // ==========================================
 
-// ⭐ CONSTANTES DE ECONOMÍA
-const CPM_VALUE = 2.00; // $2.00 por cada 1,000 descargas efectivas
-const AUTHOR_PERCENTAGE = 0.50; // 50% para el autor
-const MIN_DOWNLOADS_TO_EARN = 2000; // Mínimo de descargas antes de empezar a ganar
-const MIN_WITHDRAWAL = 10; // Mínimo de $10 USD para solicitar pago
-const MAX_DOWNLOADS_PER_IP_PER_DAY = 2; // Máximo 2 descargas efectivas por IP por día
+const CPM_VALUE = config.CPM_VALUE;
+const AUTHOR_PERCENTAGE = config.AUTHOR_PERCENTAGE;
+const MIN_DOWNLOADS_TO_EARN = config.MIN_DOWNLOADS_TO_EARN;
+const MIN_WITHDRAWAL = config.MIN_WITHDRAWAL;
+const MAX_DOWNLOADS_PER_IP_PER_DAY = config.MAX_DOWNLOADS_PER_IP_PER_DAY;
 
 /**
  * ⭐ ENDPOINT CRÍTICO: Validar descarga efectiva
- * ⚠️ ACTUALIZADO: Ahora incluye detección automática de fraude
- * Este endpoint se llama desde puente.html después de que el usuario espera 30s
+ * ⚠️ ACTUALIZADO: Incluye detección automática de fraude
  */
 app.post('/economia/validar-descarga', [
     body('juegoId').isMongoId(),
@@ -444,15 +465,13 @@ app.post('/economia/validar-descarga', [
 
         const { juegoId } = req.body;
         
-        // Obtener la IP real del usuario
         const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || 
                     req.headers['x-real-ip'] || 
                     req.connection.remoteAddress || 
                     req.socket.remoteAddress;
 
-        console.log(`📥 Validación de descarga - Juego: ${juegoId}, IP: ${ip}`);
+        logger.info(`📥 Validación de descarga - Juego: ${juegoId}, IP: ${ip}`);
 
-        // Paso 1: Verificar si el juego existe y está aprobado
         const juego = await Juego.findById(juegoId);
         if (!juego) {
             return res.status(404).json({ 
@@ -468,12 +487,11 @@ app.post('/economia/validar-descarga', [
             });
         }
 
-        // Paso 2: Verificar límite de descargas por IP (2 por día)
         let registroIP = await DescargaIP.findOne({ juegoId, ip });
         
         if (registroIP) {
             if (registroIP.contadorHoy >= MAX_DOWNLOADS_PER_IP_PER_DAY) {
-                console.log(`⚠️ Límite alcanzado - IP: ${ip}, Juego: ${juegoId}`);
+                logger.info(`⚠️ Límite alcanzado - IP: ${ip}, Juego: ${juegoId}`);
                 return res.json({
                     success: true,
                     limiteAlcanzado: true,
@@ -492,14 +510,12 @@ app.post('/economia/validar-descarga', [
             await registroIP.save();
         }
 
-        // Paso 3: Incrementar descargas efectivas del juego (atómico, sin cargar middleware pre-save)
         await Juego.findByIdAndUpdate(juegoId, { $inc: { descargasEfectivas: 1 } });
-        juego.descargasEfectivas += 1; // Actualizar en memoria para usarlo más abajo
+        juego.descargasEfectivas += 1;
 
-        // Paso 4: Obtener el autor del juego
         const autor = await Usuario.findOne({ usuario: juego.usuario });
         if (!autor) {
-            console.warn(`⚠️ Autor no encontrado: ${juego.usuario}`);
+            logger.warn(`⚠️ Autor no encontrado: ${juego.usuario}`);
             return res.json({
                 success: true,
                 descargaContada: true,
@@ -508,11 +524,9 @@ app.post('/economia/validar-descarga', [
             });
         }
 
-        // ⚠️ NUEVO: Verificar si el usuario está en lista negra
         if (autor.listaNegraAdmin) {
-            console.log(`🚫 Usuario en lista negra detectado: @${autor.usuario} - Descarga NO contabilizada para ganancia`);
+            logger.info(`🚫 Usuario en lista negra detectado: @${autor.usuario}`);
             
-            // Incrementar contador de descargas pero NO sumar saldo
             autor.descargasTotales += 1;
             await autor.save();
             
@@ -526,33 +540,26 @@ app.post('/economia/validar-descarga', [
             });
         }
 
-        // Paso 5: Actualizar descargas totales del autor
         autor.descargasTotales += 1;
 
-        // Calcular ganancia potencial
         let gananciaGenerada = 0;
         let shouldAnalyzeFraud = false;
 
-        // Paso 6: Verificar si el juego ya pasó el umbral de 2,000 descargas
         if (juego.descargasEfectivas > MIN_DOWNLOADS_TO_EARN) {
-            // Paso 7: Verificar si el autor está verificado (nivel 1+)
             if (autor.isVerificado && autor.verificadoNivel >= 1) {
-                // Calcular ganancia
                 gananciaGenerada = (CPM_VALUE * AUTHOR_PERCENTAGE) / 1000;
                 autor.saldo += gananciaGenerada;
-                shouldAnalyzeFraud = true; // Solo analizar fraude si genera ganancia
+                shouldAnalyzeFraud = true;
                 
-                console.log(`💰 Ganancia generada - Autor: @${autor.usuario}, +$${gananciaGenerada.toFixed(4)} USD`);
+                logger.info(`💰 Ganancia generada - Autor: @${autor.usuario}, +$${gananciaGenerada.toFixed(4)} USD`);
             } else {
-                console.log(`ℹ️ Autor no verificado - @${autor.usuario} - No se suma saldo`);
+                logger.info(`ℹ️ Autor no verificado - @${autor.usuario} - No se suma saldo`);
             }
         } else {
-            console.log(`ℹ️ Juego aún no alcanza 2,000 descargas - Actual: ${juego.descargasEfectivas}`);
+            logger.info(`ℹ️ Juego aún no alcanza ${MIN_DOWNLOADS_TO_EARN} descargas - Actual: ${juego.descargasEfectivas}`);
         }
 
-        // ⚠️ ANÁLISIS DE FRAUDE: Solo se ejecuta si el juego superó el umbral Y el autor está verificado
-        // (cuando shouldAnalyzeFraud = true). En otros casos no tiene sentido registrar en download_tracking.
-        if (shouldAnalyzeFraud) {
+        if (shouldAnalyzeFraud && config.FEATURES.ENABLE_FRAUD_DETECTION) {
             const fraudAnalysis = await fraudDetector.analyzeDownloadBehavior(
                 autor.usuario,
                 juegoId,
@@ -561,10 +568,9 @@ app.post('/economia/validar-descarga', [
             );
 
             if (fraudAnalysis.suspicious) {
-                console.log(`⚠️ COMPORTAMIENTO SOSPECHOSO - @${autor.usuario}:`);
-                fraudAnalysis.reasons.forEach(reason => console.log(`   - ${reason}`));
+                logger.info(`⚠️ COMPORTAMIENTO SOSPECHOSO - @${autor.usuario}:`);
+                fraudAnalysis.reasons.forEach(reason => logger.info(`   - ${reason}`));
 
-                // Si la severidad es crítica o alta, marcar automáticamente
                 if (fraudAnalysis.autoFlag) {
                     const flagged = await fraudDetector.autoFlagUser(
                         Usuario,
@@ -573,11 +579,10 @@ app.post('/economia/validar-descarga', [
                     );
 
                     if (flagged) {
-                        // ⚠️ REVERTIR LA GANANCIA DE ESTA DESCARGA
                         autor.saldo -= gananciaGenerada;
                         gananciaGenerada = 0;
                         
-                        console.log(`🚫 Usuario auto-marcado y ganancia revertida: @${autor.usuario}`);
+                        logger.info(`🚫 Usuario auto-marcado y ganancia revertida: @${autor.usuario}`);
                     }
                 }
             }
@@ -585,7 +590,7 @@ app.post('/economia/validar-descarga', [
 
         await autor.save();
 
-        console.log(`✅ Descarga efectiva validada - Juego: ${juego.title}, Total: ${juego.descargasEfectivas}`);
+        logger.info(`✅ Descarga efectiva validada - Juego: ${juego.title}, Total: ${juego.descargasEfectivas}`);
 
         res.json({
             success: true,
@@ -596,7 +601,7 @@ app.post('/economia/validar-descarga', [
         });
 
     } catch (error) {
-        console.error("❌ Error en validar-descarga:", error);
+        logger.error("❌ Error en validar-descarga:", error);
         res.status(500).json({ 
             success: false, 
             error: "Error al validar descarga" 
@@ -606,76 +611,67 @@ app.post('/economia/validar-descarga', [
 
 /**
  * ⭐ Solicitar pago (usuario)
- * Requisitos: saldo >= $10, verificado, PayPal configurado
  */
 app.post('/economia/solicitar-pago', verificarToken, async (req, res) => {
     try {
         const usuario = await Usuario.findOne({ usuario: req.usuario });
         
         if (!usuario) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        // Verificar requisitos
-        if (!usuario.isVerificado || usuario.verificadoNivel < 1) {
-            return res.status(403).json({ 
+            return res.status(404).json({ 
                 success: false, 
-                error: "Debes ser verificado (nivel 1+) para solicitar pagos" 
+                error: "Usuario no encontrado" 
             });
         }
 
         if (usuario.saldo < MIN_WITHDRAWAL) {
-            return res.status(400).json({ 
-                success: false, 
-                error: `Saldo mínimo para retiro: $${MIN_WITHDRAWAL} USD. Tu saldo: $${usuario.saldo.toFixed(2)}` 
+            return res.json({
+                success: false,
+                error: `Saldo insuficiente. Necesitas al menos $${MIN_WITHDRAWAL} USD para solicitar un pago`,
+                saldoActual: usuario.saldo,
+                minimoRequerido: MIN_WITHDRAWAL
             });
         }
 
-        if (!usuario.paypalEmail || usuario.paypalEmail.trim() === '') {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Debes configurar tu email de PayPal primero" 
+        if (!usuario.isVerificado || usuario.verificadoNivel < 1) {
+            return res.json({
+                success: false,
+                error: "Debes ser un usuario verificado para solicitar pagos",
+                verificadoNivel: usuario.verificadoNivel
+            });
+        }
+
+        if (!usuario.paypalEmail || usuario.paypalEmail.length < 5) {
+            return res.json({
+                success: false,
+                error: "Debes configurar tu email de PayPal antes de solicitar un pago"
             });
         }
 
         if (usuario.solicitudPagoPendiente) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Ya tienes una solicitud de pago pendiente" 
+            return res.json({
+                success: false,
+                error: "Ya tienes una solicitud de pago pendiente"
             });
         }
 
-        // Verificar que tenga al menos 1 juego con más de 2,000 descargas
-        const juegoElegible = await Juego.findOne({
-            usuario: usuario.usuario,
-            descargasEfectivas: { $gt: MIN_DOWNLOADS_TO_EARN }
-        });
-
-        if (!juegoElegible) {
-            return res.status(403).json({ 
-                success: false, 
-                error: `Ninguno de tus juegos ha alcanzado las ${MIN_DOWNLOADS_TO_EARN} descargas necesarias` 
-            });
-        }
-
-        // Crear solicitud de pago
         const nuevoPago = new Pago({
             usuario: usuario.usuario,
             monto: usuario.saldo,
             paypalEmail: usuario.paypalEmail,
-            estado: 'pendiente'
+            estado: 'pendiente',
+            fecha: new Date()
         });
+
         await nuevoPago.save();
 
-        // Marcar solicitud como pendiente
         usuario.solicitudPagoPendiente = true;
         await usuario.save();
 
-        console.log(`💳 Solicitud de pago creada - @${usuario.usuario}, Monto: $${usuario.saldo.toFixed(2)}`);
+        logger.info(`💸 Solicitud de pago creada - Usuario: @${usuario.usuario}, Monto: $${usuario.saldo.toFixed(2)}`);
 
         res.json({
             success: true,
-            mensaje: "Solicitud de pago enviada. El administrador la revisará pronto.",
+            mensaje: "Solicitud de pago creada exitosamente. Recibirás tu pago en 3-5 días hábiles.",
             solicitud: {
                 monto: usuario.saldo,
                 paypalEmail: usuario.paypalEmail,
@@ -684,62 +680,69 @@ app.post('/economia/solicitar-pago', verificarToken, async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ Error en solicitar-pago:", error);
-        res.status(500).json({ success: false, error: "Error al procesar solicitud de pago" });
+        logger.error("❌ Error en solicitar-pago:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al procesar solicitud de pago" 
+        });
     }
 });
 
 /**
- * ⭐ Obtener datos económicos del usuario (para perfil)
+ * ⭐ Consultar mi saldo (usuario)
  */
 app.get('/economia/mi-saldo', verificarToken, async (req, res) => {
     try {
         const usuario = await Usuario.findOne({ usuario: req.usuario })
-            .select('saldo descargasTotales paypalEmail isVerificado solicitudPagoPendiente verificadoNivel');
+            .select('saldo descargasTotales paypalEmail isVerificado verificadoNivel solicitudPagoPendiente');
 
         if (!usuario) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+            return res.status(404).json({ 
+                success: false, 
+                error: "Usuario no encontrado" 
+            });
         }
 
-        // Contar juegos con más de 2,000 descargas
-        const juegosElegibles = await Juego.countDocuments({
+        const juegosConGanancias = await Juego.countDocuments({
             usuario: req.usuario,
             descargasEfectivas: { $gt: MIN_DOWNLOADS_TO_EARN }
         });
 
-        const puedeRetirar = usuario.saldo >= MIN_WITHDRAWAL && 
-                             usuario.isVerificado && 
-                             usuario.verificadoNivel >= 1 &&
-                             usuario.paypalEmail &&
-                             juegosElegibles > 0 &&
-                             !usuario.solicitudPagoPendiente;
+        const descargasTotalesJuegos = await Juego.aggregate([
+            { $match: { usuario: req.usuario } },
+            { $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }
+        ]);
+
+        const totalDescargasJuegos = descargasTotalesJuegos[0]?.total || 0;
 
         res.json({
             success: true,
             saldo: usuario.saldo,
             descargasTotales: usuario.descargasTotales,
-            paypalEmail: usuario.paypalEmail || '',
+            descargasEfectivasJuegos: totalDescargasJuegos,
+            paypalEmail: usuario.paypalEmail,
+            paypalConfigurado: !!usuario.paypalEmail,
             isVerificado: usuario.isVerificado,
             verificadoNivel: usuario.verificadoNivel,
             solicitudPagoPendiente: usuario.solicitudPagoPendiente,
-            juegosElegibles,
-            puedeRetirar,
-            minRetiro: MIN_WITHDRAWAL,
-            requisitos: {
-                saldoMinimo: MIN_WITHDRAWAL,
-                verificacionNecesaria: 1,
-                descargasMinimas: MIN_DOWNLOADS_TO_EARN
-            }
+            juegosConGanancias,
+            puedeRetirar: usuario.saldo >= MIN_WITHDRAWAL && usuario.isVerificado,
+            minimoRetiro: MIN_WITHDRAWAL,
+            cpmValue: CPM_VALUE,
+            authorPercentage: AUTHOR_PERCENTAGE
         });
 
     } catch (error) {
-        console.error("❌ Error en mi-saldo:", error);
-        res.status(500).json({ success: false, error: "Error al obtener saldo" });
+        logger.error("❌ Error en mi-saldo:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al obtener saldo" 
+        });
     }
 });
 
 /**
- * ⭐ Actualizar email de PayPal (usuario logueado)
+ * ⭐ Actualizar email de PayPal
  */
 app.put('/economia/actualizar-paypal', [
     verificarToken,
@@ -757,64 +760,83 @@ app.put('/economia/actualizar-paypal', [
 
         const { paypalEmail } = req.body;
 
-        await Usuario.updateOne(
-            { usuario: req.usuario },
-            { $set: { paypalEmail: paypalEmail.toLowerCase() } }
-        );
+        const usuario = await Usuario.findOne({ usuario: req.usuario });
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Usuario no encontrado" 
+            });
+        }
 
-        console.log(`✅ PayPal actualizado - @${req.usuario} → ${paypalEmail}`);
+        usuario.paypalEmail = paypalEmail;
+        await usuario.save();
 
-        res.json({ 
-            success: true, 
-            mensaje: "Email de PayPal actualizado correctamente",
-            paypalEmail: paypalEmail.toLowerCase()
+        logger.info(`💳 PayPal actualizado - Usuario: @${usuario.usuario}`);
+
+        res.json({
+            success: true,
+            mensaje: "Email de PayPal actualizado exitosamente",
+            paypalEmail: usuario.paypalEmail
         });
 
     } catch (error) {
-        console.error("❌ Error en actualizar-paypal:", error);
-        res.status(500).json({ success: false, error: "Error al actualizar PayPal" });
+        logger.error("❌ Error en actualizar-paypal:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al actualizar PayPal" 
+        });
     }
 });
 
-// ⭐ RUTA LEGACY: Mantener compatibilidad con tu código anterior
+/**
+ * ⭐ Configurar PayPal (alias de actualizar-paypal)
+ */
 app.put('/usuarios/configurar-paypal', verificarToken, async (req, res) => {
     try {
         const { paypalEmail } = req.body;
-        const usuarioLogueado = req.userTokenData.usuario;
 
-        if (!paypalEmail || !paypalEmail.includes('@')) {
-            return res.status(400).json({ success: false, error: "Email de PayPal inválido" });
+        if (!paypalEmail || !/^\S+@\S+\.\S+$/.test(paypalEmail)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Email de PayPal inválido" 
+            });
         }
 
-        const user = await Usuario.findOneAndUpdate(
-            { usuario: usuarioLogueado.toLowerCase() },
-            { $set: { paypalEmail: paypalEmail.toLowerCase().trim() } },
-            { new: true }
-        );
-
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+        const usuario = await Usuario.findOne({ usuario: req.usuario });
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Usuario no encontrado" 
+            });
         }
 
-        console.log(`💰 PayPal actualizado para: @${usuarioLogueado} -> ${paypalEmail}`);
+        usuario.paypalEmail = paypalEmail.toLowerCase().trim();
+        await usuario.save();
 
-        res.json({ 
-            success: true, 
-            msg: "PayPal actualizado correctamente",
-            paypalEmail: user.paypalEmail 
+        logger.info(`💳 PayPal configurado - Usuario: @${usuario.usuario}`);
+
+        res.json({
+            success: true,
+            mensaje: "Email de PayPal configurado exitosamente",
+            paypalEmail: usuario.paypalEmail
         });
+
     } catch (error) {
-        console.error('[ERROR PayPal]:', error.message);
-        res.status(500).json({ success: false, error: "Error de servidor al guardar PayPal" });
+        logger.error("❌ Error en configurar-paypal:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al configurar PayPal" 
+        });
     }
 });
 
 // ==========================================
-// ⭐⭐⭐ RUTAS DE ADMIN - FINANZAS
+// ⭐⭐⭐ ADMIN: FINANZAS
 // ==========================================
 
 /**
- * ⭐ Obtener todas las solicitudes de pago pendientes (ADMIN)
+ * ⭐ Ver solicitudes de pago pendientes (ADMIN)
+ * Diferente de /admin/payments-pending - Esta trae solicitudes formales
  */
 app.get('/admin/finanzas/solicitudes-pendientes', async (req, res) => {
     try {
@@ -822,7 +844,6 @@ app.get('/admin/finanzas/solicitudes-pendientes', async (req, res) => {
             .sort({ fecha: -1 })
             .lean();
 
-        // Enriquecer con datos del usuario
         const solicitudesEnriquecidas = await Promise.all(
             solicitudes.map(async (s) => {
                 const usuario = await Usuario.findOne({ usuario: s.usuario })
@@ -853,68 +874,77 @@ app.get('/admin/finanzas/solicitudes-pendientes', async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ Error en solicitudes-pendientes:", error);
+        logger.error("❌ Error en solicitudes-pendientes:", error);
         res.status(500).json({ success: false, error: "Error al cargar solicitudes" });
     }
 });
 
 /**
- * ⭐ Procesar pago (marcar como completado y restar saldo) - ADMIN
+ * ⭐ Procesar pago (marcar como completado) - ADMIN
  */
 app.post('/admin/finanzas/procesar-pago/:id', [
-    param('id').isMongoId(),
-    body('notas').optional().trim()
+    param('id').isMongoId()
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
-            return res.status(400).json({ success: false, error: "ID inválido" });
-        }
-
-        const { id } = req.params;
-        const { notas } = req.body;
-
-        const pago = await Pago.findById(id);
-        if (!pago) {
-            return res.status(404).json({ success: false, error: "Pago no encontrado" });
-        }
-
-        if (pago.estado !== 'pendiente') {
             return res.status(400).json({ 
                 success: false, 
-                error: "Este pago ya fue procesado" 
+                error: "ID inválido" 
             });
         }
 
-        // Actualizar estado del pago
-        pago.estado = 'completado';
-        pago.notas = notas || `Pago procesado el ${new Date().toLocaleString('es-ES')}`;
-        await pago.save();
-
-        // Restar saldo del usuario y quitar flag de solicitud pendiente
-        const usuario = await Usuario.findOne({ usuario: pago.usuario });
-        if (usuario) {
-            usuario.saldo = Math.max(0, usuario.saldo - pago.monto);
-            usuario.solicitudPagoPendiente = false;
-            await usuario.save();
+        const pago = await Pago.findById(req.params.id);
+        if (!pago) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Pago no encontrado" 
+            });
         }
 
-        console.log(`✅ Pago procesado - @${pago.usuario}, Monto: $${pago.monto.toFixed(2)}`);
+        if (pago.estado !== 'pendiente') {
+            return res.json({
+                success: false,
+                error: `El pago ya fue ${pago.estado}`
+            });
+        }
+
+        const usuario = await Usuario.findOne({ usuario: pago.usuario });
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Usuario no encontrado" 
+            });
+        }
+
+        pago.estado = 'completado';
+        pago.notas = `Procesado el ${new Date().toLocaleDateString('es-ES')}`;
+        await pago.save();
+
+        usuario.saldo -= pago.monto;
+        if (usuario.saldo < 0) usuario.saldo = 0;
+        usuario.solicitudPagoPendiente = false;
+        await usuario.save();
+
+        logger.info(`✅ Pago procesado - Usuario: @${usuario.usuario}, Monto: $${pago.monto.toFixed(2)}`);
 
         res.json({
             success: true,
-            mensaje: "Pago procesado correctamente",
+            mensaje: "Pago procesado y saldo actualizado",
             pago: {
+                id: pago._id,
                 usuario: pago.usuario,
                 monto: pago.monto,
-                paypalEmail: pago.paypalEmail,
-                fecha: pago.fecha
+                estado: pago.estado
             }
         });
 
     } catch (error) {
-        console.error("❌ Error en procesar-pago:", error);
-        res.status(500).json({ success: false, error: "Error al procesar pago" });
+        logger.error("❌ Error en procesar-pago:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al procesar pago" 
+        });
     }
 });
 
@@ -923,126 +953,168 @@ app.post('/admin/finanzas/procesar-pago/:id', [
  */
 app.post('/admin/finanzas/rechazar-pago/:id', [
     param('id').isMongoId(),
-    body('motivo').optional().trim()
+    body('motivo').optional().isString()
 ], async (req, res) => {
     try {
-        const { id } = req.params;
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Datos inválidos" 
+            });
+        }
+
         const { motivo } = req.body;
 
-        const pago = await Pago.findById(id);
+        const pago = await Pago.findById(req.params.id);
         if (!pago) {
-            return res.status(404).json({ success: false, error: "Pago no encontrado" });
+            return res.status(404).json({ 
+                success: false, 
+                error: "Pago no encontrado" 
+            });
+        }
+
+        if (pago.estado !== 'pendiente') {
+            return res.json({
+                success: false,
+                error: `El pago ya fue ${pago.estado}`
+            });
         }
 
         pago.estado = 'rechazado';
-        pago.notas = motivo || 'Rechazado por el administrador';
+        pago.notas = motivo || `Rechazado el ${new Date().toLocaleDateString('es-ES')}`;
         await pago.save();
 
-        // Quitar flag de solicitud pendiente
-        await Usuario.updateOne(
-            { usuario: pago.usuario },
-            { $set: { solicitudPagoPendiente: false } }
-        );
+        const usuario = await Usuario.findOne({ usuario: pago.usuario });
+        if (usuario) {
+            usuario.solicitudPagoPendiente = false;
+            await usuario.save();
+        }
 
-        console.log(`❌ Pago rechazado - @${pago.usuario}, Motivo: ${motivo}`);
+        logger.info(`❌ Pago rechazado - Usuario: @${pago.usuario}, Motivo: ${motivo}`);
 
         res.json({
             success: true,
             mensaje: "Pago rechazado",
             pago: {
+                id: pago._id,
                 usuario: pago.usuario,
-                monto: pago.monto,
+                estado: pago.estado,
                 motivo: pago.notas
             }
         });
 
     } catch (error) {
-        console.error("❌ Error en rechazar-pago:", error);
-        res.status(500).json({ success: false, error: "Error al rechazar pago" });
+        logger.error("❌ Error en rechazar-pago:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al rechazar pago" 
+        });
     }
 });
 
 /**
- * ⭐ Obtener historial completo de pagos - ADMIN
+ * ⭐ Historial de pagos - ADMIN
  */
 app.get('/admin/finanzas/historial', async (req, res) => {
     try {
-        const { estado, usuario, limite = 50 } = req.query;
+        const { estado, limit = 50 } = req.query;
 
-        const filtro = {};
-        if (estado) filtro.estado = estado;
-        if (usuario) filtro.usuario = usuario.toLowerCase();
-
-        const historial = await Pago.find(filtro)
+        const query = estado ? { estado } : {};
+        
+        const pagos = await Pago.find(query)
             .sort({ fecha: -1 })
-            .limit(parseInt(limite))
+            .limit(parseInt(limit))
             .lean();
 
         res.json({
             success: true,
-            historial,
-            total: historial.length
+            pagos,
+            total: pagos.length
         });
 
     } catch (error) {
-        console.error("❌ Error en historial:", error);
-        res.status(500).json({ success: false, error: "Error al cargar historial" });
+        logger.error("❌ Error en historial:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al cargar historial" 
+        });
     }
 });
 
 /**
- * ⭐ Estadísticas generales de finanzas - ADMIN
+ * ⭐ Estadísticas financieras - ADMIN
  */
 app.get('/admin/finanzas/estadisticas', async (req, res) => {
     try {
-        const totalSolicitado = await Pago.aggregate([
-            { $match: { estado: 'pendiente' } },
-            { $group: { _id: null, total: { $sum: '$monto' } } }
+        const [
+            totalPagado,
+            totalPendiente,
+            totalRechazado,
+            usuariosConSaldo,
+            topEarners
+        ] = await Promise.all([
+            Pago.aggregate([
+                { $match: { estado: 'completado' } },
+                { $group: { _id: null, total: { $sum: '$monto' } } }
+            ]),
+            Pago.aggregate([
+                { $match: { estado: 'pendiente' } },
+                { $group: { _id: null, total: { $sum: '$monto' } } }
+            ]),
+            Pago.countDocuments({ estado: 'rechazado' }),
+            Usuario.countDocuments({ saldo: { $gt: 0 } }),
+            Usuario.find({ saldo: { $gt: 0 } })
+                .sort({ saldo: -1 })
+                .limit(10)
+                .select('usuario saldo descargasTotales verificadoNivel')
         ]);
-
-        const totalPagado = await Pago.aggregate([
-            { $match: { estado: 'completado' } },
-            { $group: { _id: null, total: { $sum: '$monto' } } }
-        ]);
-
-        const totalUsuariosConSaldo = await Usuario.countDocuments({ saldo: { $gt: 0 } });
-        const totalUsuariosVerificados = await Usuario.countDocuments({ isVerificado: true });
 
         res.json({
             success: true,
             estadisticas: {
-                solicitudesPendientes: await Pago.countDocuments({ estado: 'pendiente' }),
-                totalSolicitado: totalSolicitado[0]?.total || 0,
                 totalPagado: totalPagado[0]?.total || 0,
-                usuariosConSaldo: totalUsuariosConSaldo,
-                usuariosVerificados: totalUsuariosVerificados
+                totalPendiente: totalPendiente[0]?.total || 0,
+                totalRechazado,
+                usuariosConSaldo,
+                topEarners
             }
         });
 
     } catch (error) {
-        console.error("❌ Error en estadísticas:", error);
-        res.status(500).json({ success: false, error: "Error al cargar estadísticas" });
+        logger.error("❌ Error en estadísticas:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al cargar estadísticas" 
+        });
     }
 });
 
+// ==========================================
+// ⭐⭐⭐ ADMIN: GESTIÓN DE LINKS
+// ==========================================
+
 /**
- * ⭐ Obtener juegos en estado "revisión" (linkStatus = "revision") - ADMIN
+ * ⭐ Links en revisión - ADMIN
  */
 app.get('/admin/links/en-revision', async (req, res) => {
     try {
-        const juegosEnRevision = await Juego.find({ linkStatus: 'revision' })
-            .sort({ reportes: -1, createdAt: -1 })
+        const linksEnRevision = await Juego.find({ linkStatus: 'revision' })
+            .sort({ reportes: -1, updatedAt: -1 })
             .lean();
 
         res.json({
             success: true,
-            juegos: juegosEnRevision,
-            total: juegosEnRevision.length
+            links: linksEnRevision,
+            total: linksEnRevision.length
         });
 
     } catch (error) {
-        console.error("❌ Error en links en revisión:", error);
-        res.status(500).json({ success: false, error: "Error al cargar links en revisión" });
+        logger.error("❌ Error en links-en-revision:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al cargar links" 
+        });
     }
 });
 
@@ -1053,63 +1125,76 @@ app.put('/admin/links/marcar-caido/:id', [
     param('id').isMongoId()
 ], async (req, res) => {
     try {
-        const { id } = req.params;
-
-        const juego = await Juego.findByIdAndUpdate(
-            id,
-            { $set: { linkStatus: 'caido' } },
-            { new: true }
-        );
-
-        if (!juego) {
-            return res.status(404).json({ success: false, error: "Juego no encontrado" });
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "ID inválido" 
+            });
         }
 
-        console.log(`⚠️ Link marcado como caído - ${juego.title}`);
+        const juego = await Juego.findById(req.params.id);
+        if (!juego) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Juego no encontrado" 
+            });
+        }
+
+        juego.linkStatus = 'caido';
+        await juego.save();
+
+        logger.info(`🔗 Link marcado como caído - Juego: ${juego.title}`);
 
         res.json({
             success: true,
-            mensaje: "Link marcado como caído. No se mostrará en biblioteca.",
+            mensaje: "Link marcado como caído",
             juego: {
-                _id: juego._id,
+                id: juego._id,
                 title: juego.title,
                 linkStatus: juego.linkStatus
             }
         });
 
     } catch (error) {
-        console.error("❌ Error en marcar-caido:", error);
-        res.status(500).json({ success: false, error: "Error al marcar link como caído" });
+        logger.error("❌ Error en marcar-caido:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al marcar link" 
+        });
     }
 });
 
-// ⭐ RUTA LEGACY: Mantener compatibilidad con verificación de descarga anterior
+/**
+ * ⭐ Verificar descarga (endpoint antiguo - COMPATIBILIDAD)
+ */
 app.post('/items/verify-download/:id', async (req, res) => {
     try {
-        const itemId = req.params.id;
-        const userIP = req.ip || req.headers['x-forwarded-for'];
+        const juego = await Juego.findById(req.params.id);
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
+        }
 
-        // Redirigir a la nueva lógica
-        return res.json({ 
+        res.json({ 
             success: true, 
-            mensaje: "Por favor usa /economia/validar-descarga con el ID en el body",
-            deprecado: true
+            link: juego.link,
+            mensaje: "Link verificado - usa /economia/validar-descarga para contabilizar"
         });
-
     } catch (error) {
-        res.status(500).json({ error: "Error en validación" });
+        logger.error("Error en verify-download:", error);
+        res.status(500).json({ error: "Error al verificar" });
     }
 });
 
 // ==========================================
-// ⭐ RUTAS DE AUTENTICACIÓN (ACTUALIZADAS CON EMAIL)
+// ⭐⭐⭐ AUTENTICACIÓN
 // ==========================================
 
 /**
- * ⭐ REGISTRO (AHORA REQUIERE: NOMBRE, EMAIL, CONTRASEÑA)
+ * ⭐ Registro de usuario
  */
 app.post('/auth/register', [
-    body('usuario').trim().isLength({ min: 3, max: 20 }).toLowerCase(),
+    body('usuario').isLength({ min: 3, max: 20 }).trim().toLowerCase(),
     body('email').isEmail().normalizeEmail(),
     body('password').isLength({ min: 6 })
 ], async (req, res) => {
@@ -1117,1226 +1202,1539 @@ app.post('/auth/register', [
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
-                success: false, 
-                error: "Datos inválidos",
-                details: errors.array()
+                error: "Datos inválidos", 
+                details: errors.array() 
             });
         }
 
         const { usuario, email, password } = req.body;
 
-        // Capturar IP de registro
-        const registrationIP = req.headers['x-forwarded-for']?.split(',')[0].trim() || 
-                                req.headers['x-real-ip'] || 
-                                req.connection?.remoteAddress || 
-                                req.socket?.remoteAddress || '';
+        const existeUsuario = await Usuario.findOne({ 
+            $or: [{ usuario }, { email }] 
+        });
 
-        // Verificar si el usuario ya existe
-        const existeUsuario = await Usuario.findOne({ usuario: usuario.toLowerCase() });
         if (existeUsuario) {
             return res.status(400).json({ 
-                success: false, 
-                error: "El nombre de usuario ya está en uso" 
+                error: "El usuario o email ya existe" 
             });
         }
 
-        // Verificar si el email ya existe
-        const existeEmail = await Usuario.findOne({ email: email.toLowerCase() });
-        if (existeEmail) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "El email ya está registrado" 
-            });
-        }
-
-        // Hash de contraseña
         const hashedPassword = await bcrypt.hash(password, 10);
+        
+        const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || 
+                    req.headers['x-real-ip'] || 
+                    req.connection.remoteAddress;
 
-        // Crear usuario
         const nuevoUsuario = new Usuario({
-            usuario: usuario.toLowerCase(),
-            email: email.toLowerCase(),
+            usuario: usuario.toLowerCase().trim(),
+            email: email.toLowerCase().trim(),
             password: hashedPassword,
-            registrationIP: registrationIP
+            registrationIP: ip,
+            fecha: new Date()
         });
 
         await nuevoUsuario.save();
 
-        console.log(`✅ Nuevo usuario registrado: @${usuario} (${email})`);
+        const { accessToken, refreshToken } = generarTokens(nuevoUsuario.usuario);
 
-        // Generar token
-        const token = jwt.sign({ usuario: nuevoUsuario.usuario, email: nuevoUsuario.email }, JWT_SECRET, { expiresIn: '30d' });
-
-        res.status(201).json({
-            success: true,
-            ok: true,
-            token,
+        await RefreshToken.create({
             usuario: nuevoUsuario.usuario,
-            email: nuevoUsuario.email,
-            datosUsuario: {
+            token: refreshToken,
+            expira: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        });
+
+        logger.info(`✅ Usuario registrado - @${nuevoUsuario.usuario} - IP: ${ip}`);
+
+        res.json({
+            success: true,
+            mensaje: "Usuario registrado exitosamente",
+            token: accessToken,
+            refreshToken,
+            usuario: {
                 usuario: nuevoUsuario.usuario,
                 email: nuevoUsuario.email,
                 verificadoNivel: nuevoUsuario.verificadoNivel,
-                isVerificado: nuevoUsuario.isVerificado
+                saldo: nuevoUsuario.saldo
             }
         });
 
     } catch (error) {
-        console.error("❌ Error en register:", error);
-        res.status(500).json({ success: false, error: "Error al registrar usuario" });
+        logger.error("❌ Error en register:", error);
+        res.status(500).json({ error: "Error al registrar usuario" });
     }
 });
 
 /**
- * ⭐ LOGIN (AHORA ACEPTA NOMBRE DE USUARIO O EMAIL)
+ * ⭐ Login
  */
 app.post('/auth/login', [
-    body('usuario').notEmpty(), // Puede ser usuario o email (manteniendo compatibilidad)
+    body('usuario').trim(),
     body('password').notEmpty()
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
-                success: false, 
                 error: "Datos inválidos" 
             });
         }
 
-        const { usuario: identificador, password } = req.body;
+        const { usuario, password } = req.body;
 
-        // Buscar por nombre de usuario O por email
-        const usuario = await Usuario.findOne({
+        const user = await Usuario.findOne({
             $or: [
-                { usuario: identificador.toLowerCase() },
-                { email: identificador.toLowerCase() }
+                { usuario: usuario.toLowerCase() },
+                { email: usuario.toLowerCase() }
             ]
         });
 
-        if (!usuario) {
+        if (!user) {
             return res.status(401).json({ 
-                success: false, 
                 error: "Usuario o contraseña incorrectos" 
             });
         }
 
-        // Verificar contraseña
-        const esValida = await bcrypt.compare(password, usuario.password);
-        if (!esValida) {
+        const passwordMatch = await bcrypt.compare(password, user.password);
+        if (!passwordMatch) {
             return res.status(401).json({ 
-                success: false, 
                 error: "Usuario o contraseña incorrectos" 
             });
         }
 
-        // Generar token
-        const token = jwt.sign({ usuario: usuario.usuario, email: usuario.email }, JWT_SECRET, { expiresIn: '30d' });
+        const { accessToken, refreshToken } = generarTokens(user.usuario);
 
-        console.log(`✅ Login exitoso: @${usuario.usuario}`);
+        await RefreshToken.create({
+            usuario: user.usuario,
+            token: refreshToken,
+            expira: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        });
+
+        logger.info(`✅ Login exitoso - @${user.usuario}`);
 
         res.json({
             success: true,
-            ok: true,
-            token,
-            usuario: usuario.usuario,
-            email: usuario.email,
-            datosUsuario: {
-                usuario: usuario.usuario,
-                email: usuario.email,
-                verificadoNivel: usuario.verificadoNivel,
-                isVerificado: usuario.isVerificado,
-                saldo: usuario.saldo
+            mensaje: "Login exitoso",
+            token: accessToken,
+            refreshToken,
+            usuario: {
+                usuario: user.usuario,
+                email: user.email,
+                verificadoNivel: user.verificadoNivel,
+                saldo: user.saldo,
+                avatar: user.avatar,
+                bio: user.bio
             }
         });
 
     } catch (error) {
-        console.error("❌ Error en login:", error);
-        res.status(500).json({ success: false, error: "Error al iniciar sesión" });
+        logger.error("❌ Error en login:", error);
+        res.status(500).json({ error: "Error al iniciar sesión" });
     }
 });
 
 // ==========================================
-// ⭐⭐⭐ RUTAS ADMIN DE PODER - DASHBOARD & CONTROL TOTAL
+// ⭐⭐⭐ ADMIN: ESTADÍSTICAS Y DASHBOARD
 // ==========================================
 
 /**
- * ⭐ DASHBOARD: Métricas globales en tiempo real
+ * ⭐ Dashboard de estadísticas - ADMIN
  */
 app.get('/admin/stats/dashboard', async (req, res) => {
     try {
-        const ahora = new Date();
-        const hoy = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
-        const semana = new Date(ahora.getTime() - 7 * 24 * 60 * 60 * 1000);
-        const mes = new Date(ahora.getFullYear(), ahora.getMonth(), 1);
-
         const [
-            totalUsers, usersHoy, usersSemana,
-            totalItems, itemsPendientes, itemsAprobados, itemsHoy,
-            totalDescargas, descargasHoy,
-            saldoTotal, saldoPendientePago,
-            totalComentarios, comentariosHoy,
-            topUploaders, usuariosListaNegra,
-            itemsMasDescargados
+            totalUsuarios,
+            totalJuegos,
+            juegosAprobados,
+            juegosPendientes,
+            totalDescargas,
+            totalGanancias,
+            usuariosVerificados,
+            linksEnRevision
         ] = await Promise.all([
             Usuario.countDocuments(),
-            Usuario.countDocuments({ createdAt: { $gte: hoy } }),
-            Usuario.countDocuments({ createdAt: { $gte: semana } }),
             Juego.countDocuments(),
-            Juego.countDocuments({ status: { $in: ['pendiente', 'pending'] } }),
             Juego.countDocuments({ status: 'aprobado' }),
-            Juego.countDocuments({ createdAt: { $gte: hoy } }),
-            Juego.aggregate([{ $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }]),
-            DescargaIP.countDocuments({ fecha: { $gte: hoy } }),
-            Usuario.aggregate([{ $group: { _id: null, total: { $sum: '$saldo' } } }]),
-            Pago.aggregate([{ $match: { estado: 'pendiente' } }, { $group: { _id: null, total: { $sum: '$monto' } } }]),
-            Comentario.countDocuments(),
-            Comentario.countDocuments({ fecha: { $gte: hoy } }),
+            Juego.countDocuments({ status: 'pendiente' }),
             Juego.aggregate([
-                { $match: { status: 'aprobado' } },
-                { $group: { _id: '$usuario', totalDescargas: { $sum: '$descargasEfectivas' }, totalItems: { $sum: 1 } } },
-                { $sort: { totalDescargas: -1 } },
-                { $limit: 5 }
+                { $group: { _id: null, total: { $sum: '$descargasEfectivas' } } }
             ]),
-            Usuario.countDocuments({ listaNegraAdmin: true }),
-            Juego.find({ status: 'aprobado' }).sort({ descargasEfectivas: -1 }).limit(5).select('title usuario descargasEfectivas').lean()
+            Usuario.aggregate([
+                { $group: { _id: null, total: { $sum: '$saldo' } } }
+            ]),
+            Usuario.countDocuments({ isVerificado: true }),
+            Juego.countDocuments({ linkStatus: 'revision' })
         ]);
 
         res.json({
             success: true,
-            dashboard: {
+            stats: {
                 usuarios: {
-                    total: totalUsers,
-                    hoy: usersHoy,
-                    semana: usersSemana,
-                    listaNegra: usuariosListaNegra
+                    total: totalUsuarios,
+                    verificados: usuariosVerificados
                 },
-                items: {
-                    total: totalItems,
-                    pendientes: itemsPendientes,
-                    aprobados: itemsAprobados,
-                    hoy: itemsHoy
+                juegos: {
+                    total: totalJuegos,
+                    aprobados: juegosAprobados,
+                    pendientes: juegosPendientes
                 },
                 descargas: {
-                    total: totalDescargas[0]?.total || 0,
-                    hoy: descargasHoy
+                    total: totalDescargas[0]?.total || 0
                 },
-                finanzas: {
-                    saldoEnCirculacion: parseFloat((saldoTotal[0]?.total || 0).toFixed(2)),
-                    pendienteDePago: parseFloat((saldoPendientePago[0]?.total || 0).toFixed(2))
-                },
-                comentarios: {
-                    total: totalComentarios,
-                    hoy: comentariosHoy
-                },
-                topUploaders,
-                itemsMasDescargados
+                economia: {
+                    totalGanancias: totalGanancias[0]?.total || 0,
+                    linksEnRevision
+                }
             }
         });
+
     } catch (error) {
-        console.error("❌ Error en dashboard:", error);
-        res.status(500).json({ success: false, error: "Error al cargar dashboard" });
+        logger.error("❌ Error en dashboard:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al cargar dashboard" 
+        });
     }
 });
 
 /**
- * ⭐ ADMIN: Ajustar saldo de usuario manualmente
+ * ⭐ Ajustar saldo manualmente - ADMIN
  */
 app.put('/admin/users/ajustar-saldo/:id', [
     param('id').isMongoId(),
-    body('saldo').isFloat({ min: 0 }),
-    body('motivo').optional().trim()
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) return res.status(400).json({ success: false, error: "Datos inválidos" });
-
-        const { saldo, motivo } = req.body;
-        const user = await Usuario.findByIdAndUpdate(
-            req.params.id,
-            { $set: { saldo: parseFloat(saldo) } },
-            { new: true }
-        ).select('-password');
-
-        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-
-        console.log(`💰 ADMIN: Saldo ajustado @${user.usuario} → $${saldo} (${motivo || 'Sin motivo'})`);
-        res.json({ success: true, usuario: user.usuario, nuevoSaldo: user.saldo });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al ajustar saldo" });
-    }
-});
-
-/**
- * ⭐ ADMIN: Aprobar/Rechazar items en lote
- */
-app.put('/admin/items/bulk-action', [
-    body('ids').isArray({ min: 1 }),
-    body('action').isIn(['aprobar', 'rechazar', 'eliminar', 'online', 'caido'])
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) return res.status(400).json({ success: false, error: "Datos inválidos" });
-
-        const { ids, action } = req.body;
-        let resultado;
-
-        if (action === 'aprobar') {
-            resultado = await Juego.updateMany(
-                { _id: { $in: ids } },
-                { $set: { status: 'aprobado' } }
-            );
-        } else if (action === 'rechazar') {
-            resultado = await Juego.updateMany(
-                { _id: { $in: ids } },
-                { $set: { status: 'rechazado' } }
-            );
-        } else if (action === 'eliminar') {
-            resultado = await Juego.deleteMany({ _id: { $in: ids } });
-        } else if (action === 'online') {
-            resultado = await Juego.updateMany(
-                { _id: { $in: ids } },
-                { $set: { linkStatus: 'online', reportes: 0 } }
-            );
-        } else if (action === 'caido') {
-            resultado = await Juego.updateMany(
-                { _id: { $in: ids } },
-                { $set: { linkStatus: 'caido' } }
-            );
-        }
-
-        const afectados = resultado?.modifiedCount || resultado?.deletedCount || 0;
-        console.log(`✅ ADMIN BULK: ${action} en ${afectados} items`);
-        res.json({ success: true, afectados, action });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error en acción en lote" });
-    }
-});
-
-/**
- * ⭐ ADMIN: Rechazar pago desde panel
- */
-app.post('/admin/finanzas/rechazar-pago-admin/:id', [
-    param('id').isMongoId(),
-    body('motivo').optional().trim()
-], async (req, res) => {
-    try {
-        const pago = await Pago.findById(req.params.id);
-        if (!pago) return res.status(404).json({ success: false, error: "Pago no encontrado" });
-        if (pago.estado !== 'pendiente') return res.status(400).json({ success: false, error: "El pago ya fue procesado" });
-
-        pago.estado = 'rechazado';
-        pago.notas = req.body.motivo || 'Rechazado por el administrador';
-        await pago.save();
-
-        await Usuario.updateOne({ usuario: pago.usuario }, { $set: { solicitudPagoPendiente: false } });
-
-        console.log(`❌ ADMIN: Pago rechazado @${pago.usuario}`);
-        res.json({ success: true, mensaje: "Pago rechazado" });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al rechazar pago" });
-    }
-});
-
-/**
- * ⭐ ADMIN: Historial completo de pagos (pendientes + completados + rechazados)
- */
-app.get('/admin/finanzas/historial-completo', async (req, res) => {
-    try {
-        const { estado, limite = 100 } = req.query;
-        const filtro = estado ? { estado } : {};
-        const historial = await Pago.find(filtro)
-            .sort({ fecha: -1 })
-            .limit(parseInt(limite))
-            .lean();
-        res.json({ success: true, historial, total: historial.length });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al cargar historial" });
-    }
-});
-
-/**
- * ⭐ ADMIN: Top usuarios por saldo / descargas
- */
-app.get('/admin/stats/top-usuarios', async (req, res) => {
-    try {
-        const { por = 'saldo', limite = 10 } = req.query;
-        const sortField = por === 'descargas' ? { descargasTotales: -1 } : { saldo: -1 };
-        
-        const users = await Usuario.find({ [por === 'descargas' ? 'descargasTotales' : 'saldo']: { $gt: 0 } })
-            .sort(sortField)
-            .limit(parseInt(limite))
-            .select('usuario email saldo descargasTotales verificadoNivel paypalEmail')
-            .lean();
-
-        res.json({ success: true, users, criterio: por });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al cargar top usuarios" });
-    }
-});
-
-/**
- * ⭐ ADMIN: Eliminar TODOS los items de un usuario
- */
-app.delete('/admin/users/:id/items', [param('id').isMongoId()], async (req, res) => {
-    try {
-        const user = await Usuario.findById(req.params.id).select('usuario');
-        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-
-        const resultado = await Juego.deleteMany({ usuario: user.usuario });
-        console.log(`🗑️ ADMIN: ${resultado.deletedCount} items de @${user.usuario} eliminados`);
-        res.json({ success: true, eliminados: resultado.deletedCount, usuario: user.usuario });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al eliminar items" });
-    }
-});
-
-/**
- * ⭐ ADMIN: Resetear saldo a 0 (sanción financiera)
- */
-app.put('/admin/users/:id/reset-saldo', [param('id').isMongoId()], async (req, res) => {
-    try {
-        const user = await Usuario.findByIdAndUpdate(
-            req.params.id,
-            { $set: { saldo: 0, solicitudPagoPendiente: false } },
-            { new: true }
-        ).select('usuario saldo');
-
-        if (!user) return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        console.log(`⚡ ADMIN: Saldo reseteado a 0 para @${user.usuario}`);
-        res.json({ success: true, usuario: user.usuario });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al resetear saldo" });
-    }
-});
-
-// ==========================================
-// RUTAS ORIGINALES DE ADMIN (MANTENER)
-// ==========================================
-
-app.get('/admin/payments-pending', async (req, res) => {
-    try {
-        const usuariosParaPagar = await Usuario.find({
-            saldo: { $gte: 10 },
-            isVerificado: true,
-            verificadoNivel: { $gte: 1 }
-        }).select('usuario email paypalEmail saldo descargasTotales verificadoNivel');
-        
-        res.json(usuariosParaPagar);
-    } catch (error) {
-        res.status(500).json({ error: "Error al obtener pagos" });
-    }
-});
-
-app.put("/admin/items/:id", [
-    param('id').isMongoId(),
-    body('title').optional().trim().isLength({ max: 200 }),
-    body('description').optional().trim().isLength({ max: 1000 }),
-    body('link').optional().trim(),
-    body('image').optional().trim(),
-    body('category').optional().trim(),
-    body('status').optional().isIn(['pendiente', 'aprobado', 'rechazado', 'pending']),
-    body('linkStatus').optional().isIn(['online', 'revision', 'caido']),
-    body('reportes').optional().isInt({ min: 0 })
+    body('nuevoSaldo').isFloat({ min: 0 })
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
                 success: false, 
-                error: "Datos inválidos",
-                details: errors.array()
+                error: "Datos inválidos" 
             });
         }
 
-        const updates = {};
-        const allowedFields = ['title', 'description', 'link', 'image', 'category', 'status', 'linkStatus', 'reportes'];
-        
-        allowedFields.forEach(field => {
-            if (req.body[field] !== undefined) {
-                updates[field] = req.body[field];
-            }
-        });
+        const { nuevoSaldo } = req.body;
 
-        const item = await Juego.findByIdAndUpdate(
-            req.params.id,
-            { $set: updates },
-            { new: true, runValidators: true }
-        );
-
-        if (!item) {
-            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        const usuario = await Usuario.findById(req.params.id);
+        if (!usuario) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Usuario no encontrado" 
+            });
         }
 
-        console.log(`✅ ADMIN: Item ${item._id} actualizado`);
-        res.json({ success: true, item });
-    } catch (error) {
-        console.error('[ERROR /admin/items/:id]:', error.message);
-        res.status(500).json({ success: false, error: "Error al actualizar item" });
-    }
-});
+        const saldoAnterior = usuario.saldo;
+        usuario.saldo = nuevoSaldo;
+        await usuario.save();
 
-app.get("/admin/items", async (req, res) => {
-    try {
-        const items = await Juego.find()
-            .sort({ createdAt: -1 })
-            .lean();
-        
-        const itemsWithInfo = items.map(item => ({
-            ...item,
-            diasDesdeCreacion: Math.floor((Date.now() - new Date(item.createdAt).getTime()) / (1000 * 60 * 60 * 24)),
-            necesitaRevision: item.reportes >= 3 || item.linkStatus === 'revision'
-        }));
+        logger.info(`💰 Saldo ajustado - Usuario: @${usuario.usuario}, Anterior: $${saldoAnterior}, Nuevo: $${nuevoSaldo}`);
 
         res.json({
             success: true,
-            count: items.length,
-            items: itemsWithInfo
+            mensaje: "Saldo actualizado",
+            usuario: {
+                usuario: usuario.usuario,
+                saldoAnterior,
+                saldoNuevo: nuevoSaldo
+            }
         });
+
     } catch (error) {
-        console.error('[ERROR /admin/items]:', error.message);
-        res.status(500).json({ success: false, error: "Error al obtener items" });
+        logger.error("❌ Error en ajustar-saldo:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error al ajustar saldo" 
+        });
     }
 });
 
+/**
+ * ⭐ Acciones en lote para items - ADMIN
+ */
+app.put('/admin/items/bulk-action', [
+    body('ids').isArray(),
+    body('action').isIn(['aprobar', 'rechazar', 'eliminar'])
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Datos inválidos" 
+            });
+        }
+
+        const { ids, action } = req.body;
+
+        let resultado;
+        
+        switch (action) {
+            case 'aprobar':
+                resultado = await Juego.updateMany(
+                    { _id: { $in: ids } },
+                    { status: 'aprobado' }
+                );
+                break;
+            case 'rechazar':
+                resultado = await Juego.updateMany(
+                    { _id: { $in: ids } },
+                    { status: 'rechazado' }
+                );
+                break;
+            case 'eliminar':
+                resultado = await Juego.deleteMany({ _id: { $in: ids } });
+                break;
+        }
+
+        logger.info(`📦 Acción en lote - Acción: ${action}, Items: ${ids.length}`);
+
+        res.json({
+            success: true,
+            mensaje: `Acción ${action} completada`,
+            modificados: resultado.modifiedCount || resultado.deletedCount
+        });
+
+    } catch (error) {
+        logger.error("❌ Error en bulk-action:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: "Error en acción masiva" 
+        });
+    }
+});
+
+/**
+ * ⭐ Rechazar pago alternativo - ADMIN
+ */
+app.post('/admin/finanzas/rechazar-pago-admin/:id', [
+    param('id').isMongoId()
+], async (req, res) => {
+    try {
+        const pago = await Pago.findById(req.params.id);
+        if (!pago) {
+            return res.status(404).json({ 
+                success: false, 
+                error: "Pago no encontrado" 
+            });
+        }
+
+        pago.estado = 'rechazado';
+        await pago.save();
+
+        const usuario = await Usuario.findOne({ usuario: pago.usuario });
+        if (usuario) {
+            usuario.solicitudPagoPendiente = false;
+            await usuario.save();
+        }
+
+        res.json({
+            success: true,
+            mensaje: "Pago rechazado por administrador"
+        });
+
+    } catch (error) {
+        logger.error("❌ Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Historial completo de pagos - ADMIN
+ */
+app.get('/admin/finanzas/historial-completo', async (req, res) => {
+    try {
+        const pagos = await Pago.find()
+            .sort({ fecha: -1 })
+            .lean();
+
+        res.json({
+            success: true,
+            pagos
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Top usuarios por descargas - ADMIN
+ */
+app.get('/admin/stats/top-usuarios', async (req, res) => {
+    try {
+        const topUsuarios = await Usuario.find()
+            .sort({ descargasTotales: -1 })
+            .limit(20)
+            .select('usuario descargasTotales saldo verificadoNivel')
+            .lean();
+
+        res.json({
+            success: true,
+            usuarios: topUsuarios
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Eliminar todos los items de un usuario - ADMIN
+ */
+app.delete('/admin/users/:id/items', [
+    param('id').isMongoId()
+], async (req, res) => {
+    try {
+        const usuario = await Usuario.findById(req.params.id);
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        const resultado = await Juego.deleteMany({ usuario: usuario.usuario });
+
+        res.json({
+            success: true,
+            mensaje: `${resultado.deletedCount} items eliminados`
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Resetear saldo de usuario - ADMIN
+ */
+app.put('/admin/users/:id/reset-saldo', [
+    param('id').isMongoId()
+], async (req, res) => {
+    try {
+        const usuario = await Usuario.findById(req.params.id);
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        usuario.saldo = 0;
+        usuario.solicitudPagoPendiente = false;
+        await usuario.save();
+
+        res.json({
+            success: true,
+            mensaje: "Saldo reseteado"
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Usuarios elegibles para pago - ADMIN
+ * DIFERENTE de /admin/finanzas/solicitudes-pendientes
+ * Esta ruta muestra usuarios con saldo >= $10 que PUEDEN solicitar pago
+ */
+app.get('/admin/payments-pending', async (req, res) => {
+    try {
+        const usuariosParaPagar = await Usuario.find({
+            saldo: { $gte: MIN_WITHDRAWAL },
+            isVerificado: true,
+            verificadoNivel: { $gte: 1 }
+        }).select('usuario email paypalEmail saldo descargasTotales verificadoNivel');
+        
+        res.json({
+            success: true,
+            usuarios: usuariosParaPagar,
+            total: usuariosParaPagar.length
+        });
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error al obtener pagos" });
+    }
+});
+
+// ==========================================
+// ⭐⭐⭐ ADMIN: GESTIÓN DE ITEMS
+// ==========================================
+
+/**
+ * ⭐ Actualizar item - ADMIN
+ */
+app.put("/admin/items/:id", [
+    param('id').isMongoId(),
+    body('status').optional().isIn(['aprobado', 'rechazado', 'pendiente', 'pending'])
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: "ID o status inválido" });
+        }
+
+        const { status, title, description, image, link, category, linkStatus } = req.body;
+
+        const updateData = {};
+        if (status) updateData.status = status;
+        if (title) updateData.title = title;
+        if (description) updateData.description = description;
+        if (image) updateData.image = image;
+        if (link) updateData.link = link;
+        if (category) updateData.category = category;
+        if (linkStatus) updateData.linkStatus = linkStatus;
+
+        const juego = await Juego.findByIdAndUpdate(
+            req.params.id,
+            updateData,
+            { new: true }
+        );
+
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
+        }
+
+        logger.info(`✏️ Item actualizado - ${juego.title}`);
+
+        res.json({
+            success: true,
+            mensaje: "Item actualizado",
+            item: juego
+        });
+
+    } catch (error) {
+        logger.error("Error en actualizar item:", error);
+        res.status(500).json({ error: "Error al actualizar" });
+    }
+});
+
+/**
+ * ⭐ Listar todos los items - ADMIN
+ */
+app.get("/admin/items", async (req, res) => {
+    try {
+        const { status, linkStatus, limit = 100 } = req.query;
+
+        const query = {};
+        if (status) query.status = status;
+        if (linkStatus) query.linkStatus = linkStatus;
+
+        const items = await Juego.find(query)
+            .sort({ createdAt: -1 })
+            .limit(parseInt(limit))
+            .lean();
+
+        res.json({
+            success: true,
+            items,
+            total: items.length
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error al obtener items" });
+    }
+});
+
+/**
+ * ⭐ Resetear reportes de un item - ADMIN
+ */
 app.put("/admin/items/:id/reset-reports", [
     param('id').isMongoId()
 ], async (req, res) => {
     try {
-        const item = await Juego.findByIdAndUpdate(
-            req.params.id,
-            { 
-                $set: { 
-                    reportes: 0,
-                    linkStatus: 'online'
-                }
-            },
-            { new: true }
-        );
-
-        if (!item) {
-            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        const juego = await Juego.findById(req.params.id);
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
         }
 
-        console.log(`✅ ADMIN: Reportes reseteados para ${item.title}`);
-        res.json({ success: true, item });
+        juego.reportes = 0;
+        juego.linkStatus = 'online';
+        await juego.save();
+
+        res.json({
+            success: true,
+            mensaje: "Reportes reseteados"
+        });
+
     } catch (error) {
-        res.status(500).json({ success: false, error: "Error al resetear reportes" });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
+/**
+ * ⭐ Cambiar estado del link - ADMIN
+ */
 app.put("/admin/items/:id/link-status", [
     param('id').isMongoId(),
     body('linkStatus').isIn(['online', 'revision', 'caido'])
 ], async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ success: false, error: "Estado inválido" });
+        const { linkStatus } = req.body;
+
+        const juego = await Juego.findById(req.params.id);
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
         }
 
-        const item = await Juego.findByIdAndUpdate(
-            req.params.id,
-            { $set: { linkStatus: req.body.linkStatus } },
-            { new: true }
-        );
+        juego.linkStatus = linkStatus;
+        await juego.save();
 
-        if (!item) {
-            return res.status(404).json({ success: false, error: "Item no encontrado" });
-        }
+        res.json({
+            success: true,
+            mensaje: "Estado del link actualizado",
+            juego
+        });
 
-        console.log(`✅ ADMIN: Link status cambiado a ${req.body.linkStatus} para ${item.title}`);
-        res.json({ success: true, item });
     } catch (error) {
-        res.status(500).json({ success: false, error: "Error al actualizar estado del link" });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
+// ==========================================
+// ⭐⭐⭐ ITEMS (PÚBLICO/USUARIO)
+// ==========================================
+
+/**
+ * ⭐ Reportar item
+ */
 app.put("/items/report/:id", [
     param('id').isMongoId()
 ], async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "ID inválido" 
-            });
-        }
-
-        const juego = await Juego.findByIdAndUpdate(
-            req.params.id, 
-            { $inc: { reportes: 1 } }, 
-            { new: true }
-        );
-
+        const juego = await Juego.findById(req.params.id);
         if (!juego) {
-            return res.status(404).json({ success: false, error: "Item no encontrado" });
+            return res.status(404).json({ error: "Juego no encontrado" });
         }
 
-        if (juego.reportes >= 3 && juego.linkStatus !== 'revision') {
+        juego.reportes += 1;
+        
+        if (juego.reportes >= 3) {
             juego.linkStatus = 'revision';
-            await juego.save();
         }
-        
-        console.log(`⚠️ Reporte #${juego.reportes} para: ${juego.title}`);
-        
-        res.json({ 
+
+        await juego.save();
+
+        logger.info(`⚠️ Reporte - Juego: ${juego.title}, Total reportes: ${juego.reportes}`);
+
+        res.json({
             success: true,
-            ok: true, 
+            mensaje: "Reporte registrado",
             reportes: juego.reportes,
             linkStatus: juego.linkStatus
         });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al reportar" 
-        }); 
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error al reportar" });
     }
 });
 
-// ==========================================
-// RUTAS DE JUEGOS (CON FILTRO DE LINKS CAÍDOS)
-// ==========================================
-
+/**
+ * ⭐ Listar items públicos
+ */
 app.get("/items", async (req, res) => {
     try {
-        const { categoria } = req.query;
-        const filtro = { 
+        const { category, search } = req.query;
+
+        const query = { 
             status: 'aprobado',
-            // ⭐ CORREGIDO: Solo ocultar links caídos, permitir "en revisión" y "online"
-            linkStatus: { $in: ['online', 'revision'] }
+            linkStatus: { $ne: 'caido' }
         };
-        
-        if (categoria && categoria !== 'Todo') {
-            filtro.category = categoria;
+
+        if (category && category !== 'Todos') {
+            query.category = category;
         }
 
-        const items = await Juego.find(filtro)
-            .select('_id title description image link category usuario reportes linkStatus descargasEfectivas')
+        if (search) {
+            query.$or = [
+                { title: new RegExp(search, 'i') },
+                { description: new RegExp(search, 'i') }
+            ];
+        }
+
+        const items = await Juego.find(query)
             .sort({ createdAt: -1 })
-            .limit(100)
             .lean();
 
         res.json(items);
+
     } catch (error) {
-        res.status(500).json([]);
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error al obtener items" });
     }
 });
 
+/**
+ * ⭐ Items de un usuario específico
+ */
 app.get("/items/user/:usuario", async (req, res) => {
     try {
-        const aportes = await Juego.find({ 
-            usuario: req.params.usuario 
-        }).sort({ createdAt: -1 }).lean();
-        res.json(aportes);
-    } catch (error) { 
-        res.status(500).json([]); 
+        const items = await Juego.find({ usuario: req.params.usuario })
+            .sort({ createdAt: -1 })
+            .lean();
+
+        res.json(items);
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
+/**
+ * ⭐ Agregar nuevo item
+ */
 app.post("/items/add", [
-    body('title').notEmpty().trim().isLength({ max: 200 }),
-    body('link').notEmpty().trim(),
-    body('usuario').optional().trim()
+    verificarToken,
+    body('title').isLength({ min: 3, max: 200 }).trim(),
+    body('link').isURL()
 ], async (req, res) => {
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ 
-                success: false, 
-                error: "Datos inválidos" 
+                error: "Datos inválidos",
+                details: errors.array()
             });
         }
 
-        const nuevoJuego = new Juego({ 
-            ...req.body, 
-            status: "pendiente",
-            linkStatus: "online"
+        const { title, description, image, link, category, tags } = req.body;
+
+        const nuevoJuego = new Juego({
+            usuario: req.usuario,
+            title: title.trim(),
+            description: description || '',
+            image: image || '',
+            link,
+            category: category || 'General',
+            tags: tags || [],
+            status: 'pendiente',
+            linkStatus: 'online'
         });
-        
+
         await nuevoJuego.save();
-        
-        console.log(`✅ Nuevo item agregado: ${nuevoJuego.title} por @${nuevoJuego.usuario}`);
-        
-        res.status(201).json({ 
+
+        logger.info(`➕ Nuevo juego agregado - ${title} por @${req.usuario}`);
+
+        res.json({
             success: true,
-            ok: true,
-            item: nuevoJuego,
-            id: nuevoJuego._id
+            mensaje: "Juego agregado exitosamente",
+            item: nuevoJuego
         });
-    } catch (error) { 
-        console.error('[ERROR /items/add]:', error.message);
-        res.status(500).json({ 
-            success: false,
-            error: "Error al guardar aporte" 
-        }); 
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error al agregar juego" });
     }
 });
 
+/**
+ * ⭐ Aprobar item
+ */
 app.put("/items/approve/:id", [
     param('id').isMongoId()
 ], async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "ID inválido" 
-            });
+        const juego = await Juego.findByIdAndUpdate(
+            req.params.id,
+            { status: 'aprobado' },
+            { new: true }
+        );
+
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
         }
 
-        await Juego.findByIdAndUpdate(
-            req.params.id, 
-            { $set: { status: "aprobado" } }
-        );
-        
-        res.json({ success: true, ok: true });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error de aprobación" 
-        }); 
+        res.json({
+            success: true,
+            mensaje: "Juego aprobado",
+            item: juego
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
+/**
+ * ⭐ Eliminar item
+ */
 app.delete("/items/:id", [
+    verificarToken,
     param('id').isMongoId()
 ], async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "ID inválido" 
-            });
+        const juego = await Juego.findById(req.params.id);
+        
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
+        }
+
+        if (juego.usuario !== req.usuario) {
+            return res.status(403).json({ error: "No tienes permiso" });
         }
 
         await Juego.findByIdAndDelete(req.params.id);
-        res.json({ success: true, ok: true });
-    } catch (error) { 
-        res.status(500).json({ 
-            success: false,
-            error: "Error al eliminar" 
-        }); 
+
+        res.json({
+            success: true,
+            mensaje: "Juego eliminado"
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error al eliminar" });
     }
 });
 
+/**
+ * ⭐ Obtener un item específico
+ */
 app.get('/items/:id', async (req, res) => {
     try {
-        const item = await Juego.findById(req.params.id).lean();
-        if (!item) {
-            return res.status(404).json({ success: false, error: "Item no encontrado" });
+        const juego = await Juego.findById(req.params.id).lean();
+        
+        if (!juego) {
+            return res.status(404).json({ error: "Juego no encontrado" });
         }
-        res.json(item);
+
+        res.json(juego);
+
     } catch (error) {
-        res.status(500).json({ success: false, error: "Error al cargar item" });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
-
-
 // ==========================================
-// RUTAS DE USUARIOS
+// ⭐⭐⭐ USUARIOS
 // ==========================================
 
+/**
+ * ⭐ Listar todos los usuarios
+ */
 app.get('/auth/users', async (req, res) => {
     try {
-        const users = await Usuario.find()
+        const usuarios = await Usuario.find()
             .select('-password')
-            .sort({ fecha: -1 })
             .lean();
-        res.json(users);
+
+        res.json(usuarios);
+
     } catch (error) {
-        res.status(500).json([]);
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
-// ⭐ ADMIN: Obtener datos completos de un usuario (para panel admin)
+/**
+ * ⭐ Detalle completo de usuario - ADMIN
+ */
 app.get('/admin/users/detalle/:id', async (req, res) => {
     try {
-        const user = await Usuario.findById(req.params.id)
+        const usuario = await Usuario.findById(req.params.id)
             .select('-password')
             .lean();
-        
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
+
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
         }
 
-        // Obtener juegos del usuario
-        const juegos = await Juego.find({ usuario: user.usuario })
-            .select('title status descargasEfectivas linkStatus createdAt')
-            .lean();
-
-        res.json({ success: true, user, juegos });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al obtener datos" });
-    }
-});
-
-// ⭐ ADMIN: Toggle lista negra
-app.put('/admin/users/lista-negra/:id', [
-    body('listaNegraAdmin').isBoolean(),
-    body('notasAdmin').optional().trim().isLength({ max: 500 })
-], async (req, res) => {
-    try {
-        const { listaNegraAdmin, notasAdmin } = req.body;
-
-        const updates = { 
-            listaNegraAdmin: !!listaNegraAdmin,
-            fechaListaNegra: listaNegraAdmin ? new Date() : null
-        };
-        if (notasAdmin !== undefined) updates.notasAdmin = notasAdmin;
-
-        const user = await Usuario.findByIdAndUpdate(
-            req.params.id,
-            { $set: updates },
-            { new: true }
-        ).select('-password');
-
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        console.log(`🚫 Lista negra actualizada: @${user.usuario} → ${listaNegraAdmin}`);
-        res.json({ success: true, user });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al actualizar lista negra" });
-    }
-});
-
-// ⭐ ADMIN: Actualizar notas del admin sobre un usuario
-app.put('/admin/users/notas/:id', [
-    body('notasAdmin').trim().isLength({ max: 500 })
-], async (req, res) => {
-    try {
-        const { notasAdmin } = req.body;
-        const user = await Usuario.findByIdAndUpdate(
-            req.params.id,
-            { $set: { notasAdmin } },
-            { new: true }
-        ).select('-password');
-
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        res.json({ success: true, mensaje: "Notas actualizadas" });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al guardar notas" });
-    }
-});
-
-// ⭐ ADMIN: Obtener solo usuarios en lista negra
-app.get('/admin/users/lista-negra', async (req, res) => {
-    try {
-        const users = await Usuario.find({ listaNegraAdmin: true })
-            .select('-password')
-            .sort({ fechaListaNegra: -1 })
-            .lean();
-        res.json({ success: true, users, total: users.length });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al obtener lista negra" });
-    }
-});
-
-app.delete('/auth/users/:id', async (req, res) => {
-    try {
-        await Usuario.findByIdAndDelete(req.params.id);
-        res.json({ success: true, ok: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al eliminar" });
-    }
-});
-
-app.put('/auth/admin/verificacion/:username', [
-    body('nivel').isInt({ min: 0, max: 3 })
-], async (req, res) => {
-    try {
-        const { username } = req.params;
-        const { nivel } = req.body;
-
-        const user = await Usuario.findOneAndUpdate(
-            { usuario: username.toLowerCase() },
-            { $set: { verificadoNivel: nivel } },
-            { new: true }
-        ).select('-password');
-
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        console.log(`✅ Verificación actualizada: @${username} → Nivel ${nivel}`);
-        res.json({ success: true, user });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al actualizar verificación" });
-    }
-});
-
-// ========== RUTAS DE PERFIL ==========
-app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
-    try {
-        const username = req.params.usuario.toLowerCase().trim();
-        const user = await Usuario.findOne({ usuario: username }).select('-password -paypalEmail').lean();
-
-        if (!user) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        const publicaciones = await Juego.countDocuments({ 
-            usuario: user.usuario, 
-            status: 'aprobado' 
-        });
+        const juegos = await Juego.countDocuments({ usuario: usuario.usuario });
+        const pagos = await Pago.find({ usuario: usuario.usuario }).lean();
 
         res.json({
             success: true,
             usuario: {
-                ...user,
-                publicaciones,
-                seguidores: user.listaSeguidores ? user.listaSeguidores.length : 0,
-                siguiendo: user.siguiendo ? user.siguiendo.length : 0
+                ...usuario,
+                totalJuegos: juegos,
+                historialPagos: pagos
             }
         });
-    } catch (err) {
-        res.status(500).json({ success: false, error: "Error al cargar perfil" });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
-app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
-    try {
-        const actual = req.params.actual.toLowerCase().trim();
-        const viendo = req.params.viendo.toLowerCase().trim();
-        const user = await Usuario.findOne({ usuario: actual });
-        const loSigo = user?.siguiendo?.includes(viendo);
-        res.json({ estaSiguiendo: !!loSigo });
-    } catch (err) {
-        res.json({ estaSiguiendo: false });
-    }
-});
-
-app.put('/usuarios/toggle-seguir/:actual/:objetivo', async (req, res) => {
-    try {
-        const actual = req.params.actual.toLowerCase();
-        const objetivo = req.params.objetivo.toLowerCase();
-        
-        const userActual = await Usuario.findOne({ usuario: actual });
-        const userObjetivo = await Usuario.findOne({ usuario: objetivo });
-        
-        if (!userActual || !userObjetivo) {
-            return res.status(404).json({ success: false, error: "Usuario no encontrado" });
-        }
-
-        const yaSigue = userActual.siguiendo.includes(objetivo);
-        
-        if (yaSigue) {
-            await Usuario.updateOne(
-                { usuario: actual },
-                { $pull: { siguiendo: objetivo } }
-            );
-            await Usuario.updateOne(
-                { usuario: objetivo },
-                { $pull: { listaSeguidores: actual } }
-            );
-            res.json({ success: true, siguiendo: false });
-        } else {
-            await Usuario.updateOne(
-                { usuario: actual },
-                { $addToSet: { siguiendo: objetivo } }
-            );
-            await Usuario.updateOne(
-                { usuario: objetivo },
-                { $addToSet: { listaSeguidores: actual } }
-            );
-            res.json({ success: true, siguiendo: true });
-        }
-    } catch (err) {
-        res.status(500).json({ success: false, error: "Error al actualizar" });
-    }
-});
-
-app.put('/usuarios/update-avatar', [
-    body('usuario').notEmpty(),
-    body('avatarUrl').notEmpty()
+/**
+ * ⭐ Agregar/quitar de lista negra - ADMIN
+ */
+app.put('/admin/users/lista-negra/:id', [
+    param('id').isMongoId(),
+    body('listaNegraAdmin').isBoolean(),
+    body('motivo').optional().isString()
 ], async (req, res) => {
     try {
-        const { usuario, avatarUrl } = req.body;
-        await Usuario.updateOne(
-            { usuario: usuario.toLowerCase() },
-            { $set: { avatar: avatarUrl } }
-        );
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ success: false, error: "Error al actualizar avatar" });
+        const { listaNegraAdmin, motivo } = req.body;
+
+        const usuario = await Usuario.findById(req.params.id);
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        usuario.listaNegraAdmin = listaNegraAdmin;
+        
+        if (listaNegraAdmin) {
+            usuario.fechaListaNegra = new Date();
+            if (motivo) {
+                usuario.notasAdmin = (usuario.notasAdmin || '') + 
+                    `\n[${new Date().toLocaleDateString()}]: ${motivo}`;
+            }
+        } else {
+            usuario.fechaListaNegra = null;
+        }
+
+        await usuario.save();
+
+        logger.info(`🚫 Lista negra - Usuario: @${usuario.usuario}, Estado: ${listaNegraAdmin}`);
+
+        res.json({
+            success: true,
+            mensaje: listaNegraAdmin ? "Usuario agregado a lista negra" : "Usuario removido de lista negra",
+            usuario: {
+                usuario: usuario.usuario,
+                listaNegraAdmin: usuario.listaNegraAdmin
+            }
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
+/**
+ * ⭐ Agregar notas de admin
+ */
+app.put('/admin/users/notas/:id', [
+    param('id').isMongoId(),
+    body('notas').isString()
+], async (req, res) => {
+    try {
+        const { notas } = req.body;
+
+        const usuario = await Usuario.findById(req.params.id);
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        usuario.notasAdmin = notas;
+        await usuario.save();
+
+        res.json({
+            success: true,
+            mensaje: "Notas actualizadas"
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Listar usuarios en lista negra - ADMIN
+ */
+app.get('/admin/users/lista-negra', async (req, res) => {
+    try {
+        const usuarios = await Usuario.find({ listaNegraAdmin: true })
+            .select('usuario email saldo descargasTotales notasAdmin fechaListaNegra')
+            .lean();
+
+        res.json({
+            success: true,
+            usuarios,
+            total: usuarios.length
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Eliminar usuario
+ */
+app.delete('/auth/users/:id', async (req, res) => {
+    try {
+        await Usuario.findByIdAndDelete(req.params.id);
+        res.json({ success: true, mensaje: "Usuario eliminado" });
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Actualizar nivel de verificación - ADMIN
+ */
+app.put('/auth/admin/verificacion/:username', [
+    body('verificadoNivel').isInt({ min: 0, max: 3 })
+], async (req, res) => {
+    try {
+        const { verificadoNivel } = req.body;
+
+        const usuario = await Usuario.findOneAndUpdate(
+            { usuario: req.params.username },
+            { 
+                verificadoNivel,
+                isVerificado: verificadoNivel >= 1
+            },
+            { new: true }
+        ).select('-password');
+
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        res.json({
+            success: true,
+            mensaje: "Verificación actualizada",
+            usuario
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+// ==========================================
+// ⭐⭐⭐ PERFILES PÚBLICOS Y SEGUIMIENTO
+// ==========================================
+
+/**
+ * ⭐ Perfil público de usuario
+ */
+app.get('/usuarios/perfil-publico/:usuario', async (req, res) => {
+    try {
+        const usuario = await Usuario.findOne({ usuario: req.params.usuario })
+            .select('usuario avatar bio reputacion verificadoNivel listaSeguidores siguiendo fecha')
+            .lean();
+
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        const juegos = await Juego.find({ 
+            usuario: req.params.usuario,
+            status: 'aprobado'
+        }).select('title image descargasEfectivas createdAt').lean();
+
+        res.json({
+            usuario: {
+                ...usuario,
+                totalJuegos: juegos.length,
+                seguidores: usuario.listaSeguidores?.length || 0,
+                siguiendo: usuario.siguiendo?.length || 0
+            },
+            juegos
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Verificar si sigue a un usuario
+ */
+app.get('/usuarios/verifica-seguimiento/:actual/:viendo', async (req, res) => {
+    try {
+        const usuario = await Usuario.findOne({ usuario: req.params.actual })
+            .select('siguiendo');
+
+        const siguiendo = usuario?.siguiendo?.includes(req.params.viendo) || false;
+
+        res.json({ siguiendo });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Seguir/dejar de seguir
+ */
+app.put('/usuarios/toggle-seguir/:actual/:objetivo', async (req, res) => {
+    try {
+        const usuarioActual = await Usuario.findOne({ usuario: req.params.actual });
+        const usuarioObjetivo = await Usuario.findOne({ usuario: req.params.objetivo });
+
+        if (!usuarioActual || !usuarioObjetivo) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
+        }
+
+        const yaSigue = usuarioActual.siguiendo?.includes(req.params.objetivo);
+
+        if (yaSigue) {
+            usuarioActual.siguiendo = usuarioActual.siguiendo.filter(
+                u => u !== req.params.objetivo
+            );
+            usuarioObjetivo.listaSeguidores = usuarioObjetivo.listaSeguidores.filter(
+                u => u !== req.params.actual
+            );
+        } else {
+            if (!usuarioActual.siguiendo) usuarioActual.siguiendo = [];
+            if (!usuarioObjetivo.listaSeguidores) usuarioObjetivo.listaSeguidores = [];
+            
+            usuarioActual.siguiendo.push(req.params.objetivo);
+            usuarioObjetivo.listaSeguidores.push(req.params.actual);
+        }
+
+        await usuarioActual.save();
+        await usuarioObjetivo.save();
+
+        res.json({
+            success: true,
+            siguiendo: !yaSigue,
+            mensaje: yaSigue ? "Dejaste de seguir" : "Ahora sigues a este usuario"
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Actualizar avatar
+ */
+app.put('/usuarios/update-avatar', [
+    verificarToken,
+    body('avatar').isURL()
+], async (req, res) => {
+    try {
+        const { avatar } = req.body;
+
+        const usuario = await Usuario.findOneAndUpdate(
+            { usuario: req.usuario },
+            { avatar },
+            { new: true }
+        ).select('-password');
+
+        res.json({
+            success: true,
+            mensaje: "Avatar actualizado",
+            usuario
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Actualizar bio
+ */
 app.put('/usuarios/update-bio', [
-    body('usuario').notEmpty(),
+    verificarToken,
     body('bio').isLength({ max: 200 })
 ], async (req, res) => {
     try {
-        const { usuario, bio } = req.body;
-        await Usuario.updateOne(
-            { usuario: usuario.toLowerCase() },
-            { $set: { bio } }
-        );
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ success: false, error: "Error al actualizar bio" });
-    }
-});
+        const { bio } = req.body;
 
-// ========== RUTAS DE COMENTARIOS ==========
-app.get('/comentarios', async (req, res) => {
-    try {
-        const comms = await Comentario.find().sort({ fecha: -1 }).lean();
-        res.json(comms);
+        const usuario = await Usuario.findOneAndUpdate(
+            { usuario: req.usuario },
+            { bio },
+            { new: true }
+        ).select('-password');
+
+        res.json({
+            success: true,
+            mensaje: "Bio actualizada",
+            usuario
+        });
+
     } catch (error) {
-        res.status(500).json([]);
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
-app.get('/comentarios/:itemId', async (req, res) => {
+/**
+ * ⭐ Estadísticas de seguimiento
+ */
+app.get('/usuarios/stats-seguimiento/:usuario', async (req, res) => {
     try {
-        const comms = await Comentario.find({ itemId: req.params.itemId })
-            .sort({ fecha: -1 })
+        const usuario = await Usuario.findOne({ usuario: req.params.usuario })
+            .select('listaSeguidores siguiendo verificadoNivel reputacion')
             .lean();
-        res.json(comms);
-    } catch (error) {
-        res.status(500).json([]);
-    }
-});
 
-app.post('/comentarios', [
-    body('itemId').notEmpty(),
-    body('usuario').notEmpty(),
-    body('texto').notEmpty().isLength({ max: 500 })
-], async (req, res) => {
-    try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ success: false, error: "Datos inválidos" });
+        if (!usuario) {
+            return res.status(404).json({ error: "Usuario no encontrado" });
         }
 
-        const nuevo = new Comentario(req.body);
-        await nuevo.save();
-        res.status(201).json({ success: true, comentario: nuevo });
+        res.json({
+            success: true,
+            seguidores: usuario.listaSeguidores?.length || 0,
+            siguiendo: usuario.siguiendo?.length || 0,
+            verificadoNivel: usuario.verificadoNivel || 0,
+            reputacion: usuario.reputacion || 0
+        });
+
     } catch (error) {
-        res.status(500).json({ success: false, error: "Error al guardar comentario" });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
+// ==========================================
+// ⭐⭐⭐ COMENTARIOS
+// ==========================================
+
+/**
+ * ⭐ Listar comentarios
+ */
+app.get('/comentarios', async (req, res) => {
+    try {
+        const comentarios = await Comentario.find()
+            .sort({ fecha: -1 })
+            .lean();
+        res.json(comentarios);
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Comentarios de un item
+ */
+app.get('/comentarios/:itemId', async (req, res) => {
+    try {
+        const comentarios = await Comentario.find({ itemId: req.params.itemId })
+            .sort({ fecha: -1 })
+            .lean();
+        res.json(comentarios);
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Agregar comentario
+ */
+app.post('/comentarios', [
+    verificarToken,
+    body('texto').isLength({ min: 1, max: 500 }),
+    body('itemId').notEmpty()
+], async (req, res) => {
+    try {
+        const { texto, itemId } = req.body;
+
+        const comentario = new Comentario({
+            usuario: req.usuario,
+            texto,
+            itemId,
+            fecha: new Date()
+        });
+
+        await comentario.save();
+
+        res.json({
+            success: true,
+            comentario
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Eliminar comentario
+ */
 app.delete('/comentarios/:id', async (req, res) => {
     try {
         await Comentario.findByIdAndDelete(req.params.id);
         res.json({ success: true });
     } catch (error) {
-        res.status(500).json({ success: false, error: "Error al eliminar" });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
-// ========== RUTAS DE FAVORITOS ==========
-app.post('/favoritos/add', [
-    body('usuario').notEmpty(),
-    body('itemId').isMongoId()
-], async (req, res) => {
-    try {
-        const { usuario, itemId } = req.body;
-        
-        const existe = await Favorito.findOne({ usuario, itemId });
-        if (existe) {
-            return res.status(400).json({ success: false, error: "Ya está en favoritos" });
-        }
-
-        const fav = new Favorito({ usuario, itemId });
-        await fav.save();
-        
-        res.json({ success: true, ok: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al guardar favorito" });
-    }
-});
-
-app.delete('/favoritos/remove', [
-    body('usuario').notEmpty(),
-    body('itemId').isMongoId()
-], async (req, res) => {
-    try {
-        const { usuario, itemId } = req.body;
-        await Favorito.deleteOne({ usuario, itemId });
-        res.json({ success: true, ok: true });
-    } catch (error) {
-        res.status(500).json({ success: false, error: "Error al eliminar favorito" });
-    }
-});
-
-app.get('/favoritos/:usuario', async (req, res) => {
-    try {
-        const favs = await Favorito.find({ usuario: req.params.usuario })
-            .populate({
-                path: 'itemId',
-                select: '_id title description image link category usuario status reportes linkStatus descargasEfectivas'
-            })
-            .lean();
-
-        const items = favs
-            .filter(f => f.itemId)
-            .map(fav => ({
-                _id: fav.itemId._id,
-                title: fav.itemId.title,
-                description: fav.itemId.description,
-                image: fav.itemId.image,
-                link: fav.itemId.link,
-                category: fav.itemId.category,
-                usuario: fav.itemId.usuario,
-                status: fav.itemId.status,
-                reportes: fav.itemId.reportes,
-                linkStatus: fav.itemId.linkStatus,
-                descargasEfectivas: fav.itemId.descargasEfectivas
-            }));
-
-        res.json(items);
-    } catch (error) {
-        res.status(500).json([]);
-    }
-});
-
-// ========== ⚠️ NUEVOS ENDPOINTS: DETECCIÓN DE FRAUDE (ADMIN) ==========
+// ==========================================
+// ⭐⭐⭐ FAVORITOS
+// ==========================================
 
 /**
- * Obtener estadísticas y actividades sospechosas
+ * ⭐ Agregar a favoritos
+ */
+app.post('/favoritos/add', [
+    verificarToken,
+    body('itemId').isMongoId()
+], async (req, res) => {
+    try {
+        const { itemId } = req.body;
+
+        const existe = await Favorito.findOne({
+            usuario: req.usuario,
+            itemId
+        });
+
+        if (existe) {
+            return res.json({
+                success: false,
+                mensaje: "Ya está en favoritos"
+            });
+        }
+
+        const favorito = new Favorito({
+            usuario: req.usuario,
+            itemId
+        });
+
+        await favorito.save();
+
+        res.json({
+            success: true,
+            mensaje: "Agregado a favoritos"
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Eliminar de favoritos
+ */
+app.delete('/favoritos/remove', [
+    verificarToken,
+    body('itemId').isMongoId()
+], async (req, res) => {
+    try {
+        const { itemId } = req.body;
+
+        await Favorito.deleteOne({
+            usuario: req.usuario,
+            itemId
+        });
+
+        res.json({
+            success: true,
+            mensaje: "Eliminado de favoritos"
+        });
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+/**
+ * ⭐ Listar favoritos de un usuario
+ */
+app.get('/favoritos/:usuario', async (req, res) => {
+    try {
+        const favoritos = await Favorito.find({ usuario: req.params.usuario })
+            .populate('itemId')
+            .lean();
+
+        const items = favoritos
+            .filter(f => f.itemId)
+            .map(f => f.itemId);
+
+        res.json(items);
+
+    } catch (error) {
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+// ==========================================
+// ⭐⭐⭐ DETECCIÓN DE FRAUDE - ADMIN
+// ==========================================
+
+/**
+ * ⭐ Actividades sospechosas - ADMIN
  */
 app.get('/admin/fraud/suspicious-activities', async (req, res) => {
     try {
+        const { revisado, severidad, limit = 50 } = req.query;
+
+        const query = {};
+        if (revisado !== undefined) {
+            query.revisado = revisado === 'true';
+        }
+        if (severidad) {
+            query.severidad = severidad;
+        }
+
+        const activities = await fraudDetector.SuspiciousActivity.find(query)
+            .sort({ fecha: -1 })
+            .limit(parseInt(limit))
+            .lean();
+
         const stats = await fraudDetector.getSuspiciousStats();
+
         res.json({
             success: true,
-            ...stats
+            activities,
+            stats
         });
+
     } catch (error) {
-        console.error('❌ Error obteniendo actividades sospechosas:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error al obtener actividades sospechosas'
-        });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
 /**
- * Marcar actividad como revisada
+ * ⭐ Marcar actividad como revisada - ADMIN
  */
 app.put('/admin/fraud/mark-reviewed/:activityId', [
     param('activityId').isMongoId(),
-    body('notasAdmin').optional().isString()
+    body('notas').optional().isString()
 ], async (req, res) => {
     try {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({
-                success: false,
-                error: 'ID de actividad inválido'
-            });
-        }
+        const { notas } = req.body;
 
-        const { activityId } = req.params;
-        const { notasAdmin } = req.body;
-
-        const activity = await fraudDetector.SuspiciousActivity.findById(activityId);
+        const activity = await fraudDetector.SuspiciousActivity.findById(req.params.activityId);
+        
         if (!activity) {
-            return res.status(404).json({
-                success: false,
-                error: 'Actividad no encontrada'
-            });
+            return res.status(404).json({ error: "Actividad no encontrada" });
         }
 
         activity.revisado = true;
-        if (notasAdmin) {
-            activity.notasAdmin = notasAdmin;
+        if (notas) {
+            activity.notasAdmin = notas;
         }
+        
         await activity.save();
 
         res.json({
             success: true,
-            mensaje: 'Actividad marcada como revisada'
+            mensaje: "Actividad marcada como revisada",
+            activity
         });
+
     } catch (error) {
-        console.error('❌ Error marcando actividad como revisada:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error al marcar actividad'
-        });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
 /**
- * Obtener historial de fraude de un usuario específico
+ * ⭐ Historial de fraude de un usuario - ADMIN
  */
 app.get('/admin/fraud/user-history/:usuario', async (req, res) => {
     try {
-        const { usuario } = req.params;
-        
-        const activities = await fraudDetector.SuspiciousActivity.find({ usuario })
-            .sort({ fecha: -1 })
-            .limit(50);
+        const activities = await fraudDetector.SuspiciousActivity.find({
+            usuario: req.params.usuario
+        })
+        .sort({ fecha: -1 })
+        .lean();
+
+        const usuario = await Usuario.findOne({ usuario: req.params.usuario })
+            .select('listaNegraAdmin notasAdmin fechaListaNegra saldo descargasTotales')
+            .lean();
 
         res.json({
             success: true,
             usuario,
-            activities
+            activities,
+            totalActivities: activities.length
         });
+
     } catch (error) {
-        console.error('❌ Error obteniendo historial de usuario:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Error al obtener historial'
-        });
+        logger.error("Error:", error);
+        res.status(500).json({ error: "Error" });
     }
 });
 
-// ========== HEALTHCHECK ==========
-app.get('/', (req, res) => {
-    res.json({ 
-        status: 'UP', 
-        version: '3.2 - JOBS AUTOMÁTICOS + VERIFICACIÓN INTELIGENTE',
+// ==========================================
+// ⭐⭐⭐ RUTAS GENERALES
+// ==========================================
+
+/**
+ * ⭐ Healthcheck
+ */
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'ok',
         timestamp: new Date().toISOString(),
-        features: [
-            'Sistema de economía CPM ($2.00/1000 descargas)',
-            'Control de IPs anti-bots (TTL 24h)',
-            'Login dual (usuario/email)',
-            'Pagos PayPal automatizados',
-            'Panel Admin de Finanzas completo',
-            'Sistema de links caídos',
-            'Verificación de usuarios multi-nivel',
-            'Detección automática de fraude',
-            'Auto-marcación en lista negra',
-            'Análisis de comportamiento en tiempo real',
-            '⚙️ NUEVO: Auto-ping anti-sleep (cada 14 min)',
-            '⚙️ NUEVO: Limpieza de comentarios (cada 24h)',
-            '⚙️ NUEVO: Reset de reportes confirmados (cada 12h)',
-            '⚙️ NUEVO: Auto-rechazo de pendientes +7 días (cada 24h)',
-            '⚙️ NUEVO: Auto-marcado de links caídos +72h (cada 6h)',
-            '⚙️ NUEVO: Auto-verificación por seguidores (cada 6h)'
-        ]
+        version: '3.1.0',
+        uptime: process.uptime(),
+        mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+        environment: process.env.NODE_ENV || 'development'
     });
 });
 
-// ========== MANEJO DE ERRORES ==========
+/**
+ * ⭐ Versión de la API
+ */
+app.get('/api/version', (req, res) => {
+    res.json({
+        version: '3.1.0',
+        name: 'UpGames Backend',
+        environment: process.env.NODE_ENV || 'development',
+        features: {
+            fraudDetection: config.FEATURES.ENABLE_FRAUD_DETECTION,
+            autoPayments: config.FEATURES.ENABLE_AUTO_PAYMENTS,
+            emailNotifications: config.FEATURES.ENABLE_EMAIL_NOTIFICATIONS
+        }
+    });
+});
+
+/**
+ * ⭐ Ruta principal
+ */
+app.get('/', (req, res) => {
+    res.json({
+        mensaje: "✅ API de UpGames funcionando correctamente",
+        version: "3.1.0",
+        endpoints: {
+            economia: "/economia/*",
+            admin: "/admin/*",
+            auth: "/auth/*",
+            items: "/items",
+            usuarios: "/usuarios/*",
+            health: "/health"
+        },
+        documentacion: "Consulta /api/version para más información"
+    });
+});
+
+// ==========================================
+// ⭐⭐⭐ MANEJO DE ERRORES 404
+// ==========================================
 app.use((req, res) => {
-    res.status(404).json({ error: "Endpoint no encontrado" });
+    res.status(404).json({
+        error: "Ruta no encontrada",
+        path: req.path,
+        method: req.method
+    });
 });
 
-app.use((err, req, res, next) => {
-    console.error('Error no manejado:', err);
-    res.status(500).json({ error: "Error interno del servidor" });
-});
+// ==========================================
+// ⭐⭐⭐ JOBS AUTOMÁTICOS (CRON JOBS)
+// ==========================================
 
-// ============================================================
-// ⚙️ JOBS AUTOMÁTICOS
-// Se inician después de que el servidor arranca.
-// Cada job corre de forma independiente y con manejo de errores
-// para que si uno falla no afecte a los demás ni al servidor.
-// ============================================================
-
+/**
+ * Función que inicia todos los trabajos automáticos del sistema
+ * Se ejecuta después de que MongoDB esté conectado
+ */
 function iniciarJobsAutomaticos() {
+    logger.info('');
+    logger.info('⚙️  ========================================');
+    logger.info('⚙️  INICIANDO JOBS AUTOMÁTICOS');
+    logger.info('⚙️  ========================================');
 
     // ----------------------------------------------------------
     // JOB 1: AUTO-PING (cada 14 minutos)
@@ -2348,13 +2746,13 @@ function iniciarJobsAutomaticos() {
     setInterval(async () => {
         try {
             const res = await fetch(`${SELF_URL}/`);
-            console.log(`🏓 Auto-ping OK [${new Date().toLocaleTimeString('es-ES')}] - Status: ${res.status}`);
+            logger.info(`🏓 Auto-ping OK [${new Date().toLocaleTimeString('es-ES')}] - Status: ${res.status}`);
         } catch (err) {
-            console.warn(`⚠️ Auto-ping falló: ${err.message}`);
+            logger.warn(`⚠️ Auto-ping falló: ${err.message}`);
         }
     }, 14 * 60 * 1000); // 14 minutos
 
-    console.log('🏓 JOB 1: Auto-ping activo (cada 14 min)');
+    logger.info('🏓 JOB 1: Auto-ping activo (cada 14 min)');
 
     // ----------------------------------------------------------
     // JOB 2: LIMPIAR COMENTARIOS VACÍOS Y DUPLICADOS (cada 24h)
@@ -2395,18 +2793,18 @@ function iniciarJobsAutomaticos() {
             }
 
             if (vacios.deletedCount > 0 || eliminadosDuplicados > 0) {
-                console.log(`🧹 JOB 2 Comentarios: ${vacios.deletedCount} vacíos + ${eliminadosDuplicados} duplicados eliminados`);
+                logger.info(`🧹 JOB 2 Comentarios: ${vacios.deletedCount} vacíos + ${eliminadosDuplicados} duplicados eliminados`);
             } else {
-                console.log(`🧹 JOB 2 Comentarios: sin basura encontrada`);
+                logger.info(`🧹 JOB 2 Comentarios: sin basura encontrada`);
             }
         } catch (err) {
-            console.error('❌ JOB 2 Error limpiando comentarios:', err.message);
+            logger.error('❌ JOB 2 Error limpiando comentarios:', err.message);
         }
     }
 
     limpiarComentarios(); // Correr al arrancar
     setInterval(limpiarComentarios, 24 * 60 * 60 * 1000); // Cada 24h
-    console.log('🧹 JOB 2: Limpieza de comentarios activa (cada 24h)');
+    logger.info('🧹 JOB 2: Limpieza de comentarios activa (cada 24h)');
 
     // ----------------------------------------------------------
     // JOB 3: RESETEAR REPORTES DE JUEGOS EN ESTADO 'online' (cada 12h)
@@ -2428,17 +2826,17 @@ function iniciarJobsAutomaticos() {
             );
 
             if (resultado.modifiedCount > 0) {
-                console.log(`🔄 JOB 3 Reportes: ${resultado.modifiedCount} juegos reseteados a 0 reportes`);
+                logger.info(`🔄 JOB 3 Reportes: ${resultado.modifiedCount} juegos reseteados a 0 reportes`);
             } else {
-                console.log(`🔄 JOB 3 Reportes: ningún juego necesitaba reset`);
+                logger.info(`🔄 JOB 3 Reportes: ningún juego necesitaba reset`);
             }
         } catch (err) {
-            console.error('❌ JOB 3 Error reseteando reportes:', err.message);
+            logger.error('❌ JOB 3 Error reseteando reportes:', err.message);
         }
     }
 
     setInterval(resetearReportesOnline, 12 * 60 * 60 * 1000); // Cada 12h
-    console.log('🔄 JOB 3: Reset de reportes activo (cada 12h)');
+    logger.info('🔄 JOB 3: Reset de reportes activo (cada 12h)');
 
     // ----------------------------------------------------------
     // JOB 4: AUTO-RECHAZAR ITEMS PENDIENTES VIEJOS (cada 24h)
@@ -2463,18 +2861,18 @@ function iniciarJobsAutomaticos() {
             );
 
             if (resultado.modifiedCount > 0) {
-                console.log(`⏰ JOB 4 Pendientes: ${resultado.modifiedCount} items auto-rechazados por expiración (7 días)`);
+                logger.info(`⏰ JOB 4 Pendientes: ${resultado.modifiedCount} items auto-rechazados por expiración (7 días)`);
             } else {
-                console.log(`⏰ JOB 4 Pendientes: no hay items expirados`);
+                logger.info(`⏰ JOB 4 Pendientes: no hay items expirados`);
             }
         } catch (err) {
-            console.error('❌ JOB 4 Error en auto-rechazo:', err.message);
+            logger.error('❌ JOB 4 Error en auto-rechazo:', err.message);
         }
     }
 
     autoRechazarPendientes(); // Correr al arrancar
     setInterval(autoRechazarPendientes, 24 * 60 * 60 * 1000); // Cada 24h
-    console.log('⏰ JOB 4: Auto-rechazo de pendientes activo (cada 24h)');
+    logger.info('⏰ JOB 4: Auto-rechazo de pendientes activo (cada 24h)');
 
     // ----------------------------------------------------------
     // JOB 5: AUTO-MARCAR LINKS CAÍDOS POR REPORTES (cada 6h)
@@ -2495,17 +2893,17 @@ function iniciarJobsAutomaticos() {
             );
 
             if (resultado.modifiedCount > 0) {
-                console.log(`🚨 JOB 5 Links: ${resultado.modifiedCount} links auto-marcados como caídos (10+ reportes, 72h sin revisión)`);
+                logger.info(`🚨 JOB 5 Links: ${resultado.modifiedCount} links auto-marcados como caídos (10+ reportes, 72h sin revisión)`);
             } else {
-                console.log(`🚨 JOB 5 Links: ningún link requirió auto-marcar`);
+                logger.info(`🚨 JOB 5 Links: ningún link requirió auto-marcar`);
             }
         } catch (err) {
-            console.error('❌ JOB 5 Error marcando links caídos:', err.message);
+            logger.error('❌ JOB 5 Error marcando links caídos:', err.message);
         }
     }
 
     setInterval(autoMarcarCaidos, 6 * 60 * 60 * 1000); // Cada 6h
-    console.log('🚨 JOB 5: Auto-marcado de links caídos activo (cada 6h)');
+    logger.info('🚨 JOB 5: Auto-marcado de links caídos activo (cada 6h)');
 
     // ----------------------------------------------------------
     // JOB 6: AUTO-VERIFICACIÓN POR SEGUIDORES (cada 6h)
@@ -2551,39 +2949,54 @@ function iniciarJobsAutomaticos() {
 
             if (operaciones.length > 0) {
                 await Usuario.bulkWrite(operaciones);
-                console.log(`✅ JOB 6 Verificación: ${subieron} usuarios subieron de nivel automáticamente`);
+                logger.info(`✅ JOB 6 Verificación: ${subieron} usuarios subieron de nivel automáticamente`);
             } else {
-                console.log(`✅ JOB 6 Verificación: todos los niveles están al día`);
+                logger.info(`✅ JOB 6 Verificación: todos los niveles están al día`);
             }
         } catch (err) {
-            console.error('❌ JOB 6 Error en auto-verificación:', err.message);
+            logger.error('❌ JOB 6 Error en auto-verificación:', err.message);
         }
     }
 
     autoVerificarUsuarios(); // Correr al arrancar
     setInterval(autoVerificarUsuarios, 6 * 60 * 60 * 1000); // Cada 6h
-    console.log('✅ JOB 6: Auto-verificación por seguidores activa (cada 6h)');
+    logger.info('✅ JOB 6: Auto-verificación por seguidores activa (cada 6h)');
 
-    console.log('');
-    console.log('⚙️  TODOS LOS JOBS AUTOMÁTICOS INICIADOS');
-    console.log('─────────────────────────────────────────');
+    logger.info('');
+    logger.info('⚙️  TODOS LOS JOBS AUTOMÁTICOS INICIADOS');
+    logger.info('⚙️  ========================================');
 }
 
-// ========== INICIAR SERVIDOR ==========
+// ==========================================
+// ⭐⭐⭐ INICIAR SERVIDOR
+// ==========================================
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-    console.log(`🔥 SERVIDOR CORRIENDO EN PUERTO ${PORT}`);
-    console.log(`📡 Endpoint: http://localhost:${PORT}`);
-    console.log(`💰 Sistema de Economía: ACTIVO`);
-    console.log(`📊 CPM: $${CPM_VALUE} (${AUTHOR_PERCENTAGE * 100}% autor)`);
-    console.log(`🎯 Umbral de ganancias: ${MIN_DOWNLOADS_TO_EARN} descargas`);
-    console.log(`💵 Retiro mínimo: $${MIN_WITHDRAWAL} USD`);
-    console.log(`🛡️ Anti-bots: Máx ${MAX_DOWNLOADS_PER_IP_PER_DAY} descargas/IP/día`);
-    console.log(`⚠️ Sistema de detección de fraude: ACTIVO`);
-    console.log(`🚫 Auto-marcación en lista negra: HABILITADA`);
 
-    // Iniciar jobs después de que el servidor esté listo y Mongo conectado
+app.listen(PORT, () => {
+    logger.info('');
+    logger.info('🚀 ========================================');
+    logger.info('🚀 SERVIDOR UPGAMES v3.1.0 INICIADO');
+    logger.info('🚀 ========================================');
+    logger.info(`🌍 Puerto: ${PORT}`);
+    logger.info(`🔧 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+    logger.info(`💰 CPM: $${CPM_VALUE} (${AUTHOR_PERCENTAGE * 100}% al creador)`);
+    logger.info(`📊 Umbral mínimo: ${MIN_DOWNLOADS_TO_EARN} descargas`);
+    logger.info(`💸 Retiro mínimo: $${MIN_WITHDRAWAL} USD`);
+    logger.info(`🛡️  Detección de fraude: ${config.FEATURES.ENABLE_FRAUD_DETECTION ? 'ACTIVA' : 'INACTIVA'}`);
+    logger.info('🚀 ========================================');
+
+    // Iniciar jobs después de que el servidor esté listo y MongoDB conectado
     mongoose.connection.once('open', () => {
         iniciarJobsAutomaticos();
     });
+});
+
+// Manejo de errores no capturados
+process.on('unhandledRejection', (reason, promise) => {
+    logger.error('❌ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    logger.error('❌ Uncaught Exception:', error);
+    process.exit(1);
 });

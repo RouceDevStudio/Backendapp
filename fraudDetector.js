@@ -1,45 +1,28 @@
-/**
- * ⚠️ SISTEMA DE DETECCIÓN AUTOMÁTICA DE FRAUDE
- * Detecta comportamientos sospechosos y marca usuarios para revisión admin
- */
+// ========================================
+// ⚠️ SISTEMA DE DETECCIÓN DE FRAUDE OPTIMIZADO
+// ========================================
 
 const mongoose = require('mongoose');
+const logger = require('./logger');
 
 // ========== CONFIGURACIÓN DE UMBRALES ==========
 const THRESHOLDS = {
-    // Descargas sospechosas
-    MAX_DOWNLOADS_PER_MINUTE: 10,        // Máx descargas efectivas por minuto
-    MAX_DOWNLOADS_PER_HOUR: 100,         // Máx descargas efectivas por hora
-    MAX_DOWNLOADS_PER_DAY: 500,          // Máx descargas efectivas por día
-    
-    // Comportamiento de IP
-    MAX_IPS_PER_USER_PER_HOUR: 5,        // Cambios de IP sospechosos (VPN hopping)
-    MAX_DOWNLOADS_FROM_SINGLE_IP: 50,    // Descargas desde una sola IP (bot)
-    
-    // Velocidad anormal
-    MIN_SECONDS_BETWEEN_DOWNLOADS: 3,    // Tiempo mínimo entre descargas del mismo usuario
-    
-    // Ganancia sospechosa
-    MAX_EARNINGS_PER_HOUR: 0.50,         // Máx $0.50 USD por hora (500 descargas/hora)
+    MAX_DOWNLOADS_PER_MINUTE: 10,
+    MAX_DOWNLOADS_PER_HOUR: 100,
+    MAX_DOWNLOADS_PER_DAY: 500,
+    MAX_IPS_PER_USER_PER_HOUR: 5,
+    MAX_DOWNLOADS_FROM_SINGLE_IP: 50,
+    MIN_SECONDS_BETWEEN_DOWNLOADS: 3,
+    MAX_EARNINGS_PER_HOUR: 0.50,
 };
 
-// ========== SCHEMA: Registro de Comportamiento Sospechoso ==========
+// ========== SCHEMAS ==========
+
 const SuspiciousActivitySchema = new mongoose.Schema({
-    usuario: {
-        type: String,
-        required: true,
-        index: true
-    },
+    usuario: { type: String, required: true, index: true },
     tipo: {
         type: String,
-        enum: [
-            'download_velocity',     // Descargas demasiado rápidas
-            'ip_hopping',           // Cambio constante de IPs (VPN)
-            'single_ip_abuse',      // Muchas descargas desde una IP
-            'bot_pattern',          // Patrón de bot detectado
-            'earnings_spike',       // Aumento anormal de ganancias
-            'time_anomaly'          // Tiempo entre descargas sospechoso
-        ],
+        enum: ['download_velocity', 'ip_hopping', 'single_ip_abuse', 'bot_pattern', 'earnings_spike', 'time_anomaly'],
         required: true
     },
     severidad: {
@@ -47,84 +30,49 @@ const SuspiciousActivitySchema = new mongoose.Schema({
         enum: ['low', 'medium', 'high', 'critical'],
         default: 'medium'
     },
-    detalles: {
-        type: Object,
-        default: {}
-    },
-    autoMarcado: {
-        type: Boolean,
-        default: false  // true si fue marcado automáticamente a lista negra
-    },
-    revisado: {
-        type: Boolean,
-        default: false
-    },
-    notasAdmin: {
-        type: String,
-        default: ''
-    },
-    fecha: {
-        type: Date,
-        default: Date.now,
-        index: true
-    }
+    detalles: { type: Object, default: {} },
+    autoMarcado: { type: Boolean, default: false },
+    revisado: { type: Boolean, default: false },
+    notasAdmin: { type: String, default: '' },
+    fecha: { type: Date, default: Date.now, index: true }
 }, {
     collection: 'suspicious_activities',
     timestamps: true
 });
 
-const SuspiciousActivity = mongoose.model('SuspiciousActivity', SuspiciousActivitySchema);
-
-// ========== SCHEMA: Tracking de Actividad de Descarga (Cache temporal) ==========
 const DownloadTrackingSchema = new mongoose.Schema({
-    usuario: {
-        type: String,
-        required: true,
-        index: true
+    usuario: { type: String, required: true, index: true },
+    juegoId: { type: String, required: true },
+    ip: { type: String, required: true, index: true },
+    timestamp: { 
+        type: Date, 
+        default: Date.now, 
+        index: true, 
+        expires: 86400 
     },
-    juegoId: {
-        type: String,
-        required: true
-    },
-    ip: {
-        type: String,
-        required: true
-    },
-    timestamp: {
-        type: Date,
-        default: Date.now,
-        index: true,
-        expires: 86400 // Se auto-elimina después de 24 horas (TTL index)
-    },
-    ganancia: {
-        type: Number,
-        default: 0
-    }
+    ganancia: { type: Number, default: 0 }
 }, {
     collection: 'download_tracking',
     timestamps: false
 });
 
+const SuspiciousActivity = mongoose.model('SuspiciousActivity', SuspiciousActivitySchema);
 const DownloadTracking = mongoose.model('DownloadTracking', DownloadTrackingSchema);
 
-// ========== FUNCIONES DE DETECCIÓN ==========
+// ========== FUNCIÓN PRINCIPAL OPTIMIZADA ==========
 
 /**
- * Analiza el comportamiento del usuario y detecta anomalías
- * @param {String} usuario - Nombre de usuario
- * @param {String} juegoId - ID del juego descargado
- * @param {String} ip - IP del usuario
- * @param {Number} ganancia - Ganancia generada en esta descarga
- * @returns {Object} - { suspicious: boolean, reasons: [], severity: string, autoFlag: boolean }
+ * 🚀 VERSIÓN OPTIMIZADA: Una sola query de agregación
+ * Analiza comportamiento del usuario y detecta anomalías
  */
 async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
     const now = new Date();
     const reasons = [];
     let maxSeverity = 'low';
-    let autoFlag = false; // Si es true, se marca automáticamente a lista negra
+    let autoFlag = false;
 
     try {
-        // ========== 1. REGISTRAR ESTA DESCARGA ==========
+        // ⭐ PASO 1: Registrar esta descarga
         await DownloadTracking.create({
             usuario,
             juegoId,
@@ -133,28 +81,67 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
             ganancia
         });
 
-        // ========== 2. OBTENER ACTIVIDAD RECIENTE ==========
+        // ⭐ PASO 2: Obtener TODAS las estadísticas en UNA SOLA QUERY
         const oneMinuteAgo = new Date(now.getTime() - 60 * 1000);
         const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
         const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-        // Descargas del usuario en diferentes períodos
-        const downloadsLastMinute = await DownloadTracking.countDocuments({
-            usuario,
-            timestamp: { $gte: oneMinuteAgo }
-        });
+        const stats = await DownloadTracking.aggregate([
+            {
+                $match: {
+                    usuario,
+                    timestamp: { $gte: oneDayAgo }
+                }
+            },
+            {
+                $facet: {
+                    // Contar descargas por periodo
+                    lastMinute: [
+                        { $match: { timestamp: { $gte: oneMinuteAgo } } },
+                        { $count: "count" }
+                    ],
+                    lastHour: [
+                        { $match: { timestamp: { $gte: oneHourAgo } } },
+                        { $count: "count" }
+                    ],
+                    lastDay: [
+                        { $count: "count" }
+                    ],
+                    // IPs únicas en la última hora
+                    uniqueIPsLastHour: [
+                        { $match: { timestamp: { $gte: oneHourAgo } } },
+                        { $group: { _id: "$ip" } },
+                        { $group: { _id: null, ips: { $push: "$_id" }, count: { $sum: 1 } } }
+                    ],
+                    // Ganancias totales última hora
+                    earningsLastHour: [
+                        { $match: { timestamp: { $gte: oneHourAgo } } },
+                        { $group: { _id: null, total: { $sum: "$ganancia" } } }
+                    ],
+                    // Últimas 5 descargas para análisis de tiempo
+                    recentDownloads: [
+                        { $match: { timestamp: { $gte: oneHourAgo } } },
+                        { $sort: { timestamp: -1 } },
+                        { $limit: 5 },
+                        { $project: { timestamp: 1 } }
+                    ]
+                }
+            }
+        ]);
 
-        const downloadsLastHour = await DownloadTracking.countDocuments({
-            usuario,
-            timestamp: { $gte: oneHourAgo }
-        });
+        const data = stats[0];
+        
+        // Extraer valores
+        const downloadsLastMinute = data.lastMinute[0]?.count || 0;
+        const downloadsLastHour = data.lastHour[0]?.count || 0;
+        const downloadsLastDay = data.lastDay[0]?.count || 0;
+        const uniqueIPsData = data.uniqueIPsLastHour[0] || { count: 0, ips: [] };
+        const totalEarnings = data.earningsLastHour[0]?.total || 0;
+        const recentDownloads = data.recentDownloads || [];
 
-        const downloadsLastDay = await DownloadTracking.countDocuments({
-            usuario,
-            timestamp: { $gte: oneDayAgo }
-        });
+        // ⭐ PASO 3: DETECCIÓN DE ANOMALÍAS
 
-        // ========== 3. DETECCIÓN: VELOCIDAD DE DESCARGA ANORMAL ==========
+        // 3.1 Velocidad de descarga anormal
         if (downloadsLastMinute > THRESHOLDS.MAX_DOWNLOADS_PER_MINUTE) {
             reasons.push({
                 tipo: 'download_velocity',
@@ -162,7 +149,7 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
                 valor: downloadsLastMinute
             });
             maxSeverity = 'critical';
-            autoFlag = true; // Auto-marcar por velocidad extrema
+            autoFlag = true;
         }
 
         if (downloadsLastHour > THRESHOLDS.MAX_DOWNLOADS_PER_HOUR) {
@@ -184,24 +171,19 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
             maxSeverity = upgradeSeverity(maxSeverity, 'medium');
         }
 
-        // ========== 4. DETECCIÓN: IP HOPPING (VPN/Proxy) ==========
-        const uniqueIPsLastHour = await DownloadTracking.distinct('ip', {
-            usuario,
-            timestamp: { $gte: oneHourAgo }
-        });
-
-        if (uniqueIPsLastHour.length > THRESHOLDS.MAX_IPS_PER_USER_PER_HOUR) {
+        // 3.2 IP Hopping (VPN/Proxy abuse)
+        if (uniqueIPsData.count > THRESHOLDS.MAX_IPS_PER_USER_PER_HOUR) {
             reasons.push({
                 tipo: 'ip_hopping',
-                mensaje: `${uniqueIPsLastHour.length} IPs diferentes en 1 hora (posible VPN hopping)`,
-                valor: uniqueIPsLastHour.length,
-                ips: uniqueIPsLastHour
+                mensaje: `${uniqueIPsData.count} IPs diferentes en 1 hora (posible VPN hopping)`,
+                valor: uniqueIPsData.count,
+                ips: uniqueIPsData.ips
             });
             maxSeverity = upgradeSeverity(maxSeverity, 'high');
             autoFlag = true;
         }
 
-        // ========== 5. DETECCIÓN: ABUSO DESDE UNA SOLA IP ==========
+        // 3.3 Abuso desde una sola IP
         const downloadsFromThisIP = await DownloadTracking.countDocuments({
             ip,
             timestamp: { $gte: oneDayAgo }
@@ -218,16 +200,11 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
             autoFlag = true;
         }
 
-        // ========== 6. DETECCIÓN: TIEMPO ENTRE DESCARGAS SOSPECHOSO ==========
-        const lastDownloads = await DownloadTracking.find({
-            usuario,
-            timestamp: { $gte: oneHourAgo }
-        }).sort({ timestamp: -1 }).limit(5);
-
-        if (lastDownloads.length >= 2) {
+        // 3.4 Tiempo entre descargas sospechoso
+        if (recentDownloads.length >= 2) {
             let hasAnomalousSpeed = false;
-            for (let i = 0; i < lastDownloads.length - 1; i++) {
-                const timeDiff = (lastDownloads[i].timestamp - lastDownloads[i + 1].timestamp) / 1000; // en segundos
+            for (let i = 0; i < recentDownloads.length - 1; i++) {
+                const timeDiff = (recentDownloads[i].timestamp - recentDownloads[i + 1].timestamp) / 1000;
                 if (timeDiff < THRESHOLDS.MIN_SECONDS_BETWEEN_DOWNLOADS) {
                     hasAnomalousSpeed = true;
                     break;
@@ -244,24 +221,7 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
             }
         }
 
-        // ========== 7. DETECCIÓN: SPIKE DE GANANCIAS ==========
-        const earningsLastHour = await DownloadTracking.aggregate([
-            {
-                $match: {
-                    usuario,
-                    timestamp: { $gte: oneHourAgo }
-                }
-            },
-            {
-                $group: {
-                    _id: null,
-                    total: { $sum: '$ganancia' }
-                }
-            }
-        ]);
-
-        const totalEarnings = earningsLastHour.length > 0 ? earningsLastHour[0].total : 0;
-
+        // 3.5 Spike de ganancias
         if (totalEarnings > THRESHOLDS.MAX_EARNINGS_PER_HOUR) {
             reasons.push({
                 tipo: 'earnings_spike',
@@ -272,9 +232,8 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
             autoFlag = true;
         }
 
-        // ========== 8. REGISTRAR ACTIVIDAD SOSPECHOSA SI SE DETECTÓ ==========
+        // ⭐ PASO 4: Registrar actividad sospechosa si se detectó
         if (reasons.length > 0) {
-            // Crear un registro por cada tipo de razón detectada
             for (const reason of reasons) {
                 await SuspiciousActivity.create({
                     usuario,
@@ -293,7 +252,7 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
                 });
             }
 
-            console.log(`⚠️ FRAUDE DETECTADO - Usuario: @${usuario}, Severidad: ${maxSeverity.toUpperCase()}, Razones: ${reasons.length}`);
+            logger.warn(`Fraude detectado - Usuario: @${usuario}, Severidad: ${maxSeverity.toUpperCase()}, Razones: ${reasons.length}`);
             
             return {
                 suspicious: true,
@@ -313,7 +272,7 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
         };
 
     } catch (error) {
-        console.error('❌ Error en análisis de comportamiento:', error);
+        logger.error(`Error en análisis de comportamiento: ${error.message}`);
         return {
             suspicious: false,
             reasons: ['Error en análisis'],
@@ -325,20 +284,16 @@ async function analyzeDownloadBehavior(usuario, juegoId, ip, ganancia = 0) {
 }
 
 /**
- * Marca automáticamente un usuario en lista negra
- * @param {Object} Usuario - Modelo de Usuario de Mongoose
- * @param {String} usuario - Nombre de usuario
- * @param {String} razon - Razón de la marcación
+ * Marcar usuario automáticamente en lista negra
  */
 async function autoFlagUser(Usuario, usuario, razon) {
     try {
         const user = await Usuario.findOne({ usuario });
         if (!user) {
-            console.error(`❌ Usuario no encontrado para auto-flag: @${usuario}`);
+            logger.error(`Usuario no encontrado para auto-flag: @${usuario}`);
             return false;
         }
 
-        // Solo marcar si no está ya en lista negra
         if (!user.listaNegraAdmin) {
             user.listaNegraAdmin = true;
             user.fechaListaNegra = new Date();
@@ -347,20 +302,20 @@ async function autoFlagUser(Usuario, usuario, razon) {
             
             await user.save();
             
-            console.log(`🚫 Usuario auto-marcado en lista negra: @${usuario} - Razón: ${razon}`);
+            logger.warn(`Usuario auto-marcado en lista negra: @${usuario} - Razón: ${razon}`);
             return true;
         } else {
-            console.log(`ℹ️ Usuario ya está en lista negra: @${usuario}`);
+            logger.info(`Usuario ya está en lista negra: @${usuario}`);
             return false;
         }
     } catch (error) {
-        console.error('❌ Error al auto-marcar usuario:', error);
+        logger.error(`Error al auto-marcar usuario: ${error.message}`);
         return false;
     }
 }
 
 /**
- * Obtiene estadísticas de actividad sospechosa
+ * Obtener estadísticas de actividad sospechosa
  */
 async function getSuspiciousStats() {
     try {
@@ -395,7 +350,7 @@ async function getSuspiciousStats() {
             recentActivity
         };
     } catch (error) {
-        console.error('❌ Error obteniendo stats de fraude:', error);
+        logger.error(`Error obteniendo stats de fraude: ${error.message}`);
         return null;
     }
 }
